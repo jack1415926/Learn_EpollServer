@@ -1,32 +1,63 @@
-# Learn_EpollServer
-个人学习项目
-  以epoll去触发事件流向，
-    读【采用了两阶段{包头+包体}】，然后通过触发线程处理我们的业务逻辑
-    发【单独的线程去处理我们要发送的数据】 我们采用先write，如果没有发完，再加到我们的epoll事件
+# **🚀 Learn\_EpollServer**
 
+**基于 Epoll 与线程池的高性能 C++ 并发服务器框架**
 
-	
+## **📖 项目简介**
 
-```
+Learn\_EpollServer 是一个借鉴 Nginx 架构思想实现的高性能 C++ 网络服务器框架。本项目采用 **Reactor 模型**，底层依赖 Linux epoll 机制进行多路复用，配合自定义线程池，能够稳定、高效地处理海量并发连接。
 
-ngx_read_request_handler													//读操作
-	void ngx_wait_request_handler_proc_p1(lpngx_connection_t pConn,bool &isflood); 		//包头收完整后的处理，我们称为包处理阶段1：写成函数，方便复用
-	void ngx_wait_request_handler_proc_plast(lpngx_connection_t pConn,bool &isflood);      //收到一个完整包后的处理，放到一个函数中，方便调用	
-		 g_threadpool.inMsgRecvQueueAndSignal(pConn->precvMemPointer); 				//入消息队列并触发线程处理消息
-		 	Call();                    										//可以激发一个线程来干活了，刺激ThreadFunc线程函数
-				g_socket.threadRecvProcFunc(jobbuf);    						//处理消息队列中来的消息
-    					(this->*statusHandler[imsgCode])(p_Conn,pMsgHeader,(char *)pPkgBody,pkglen-m	_iLenPkgHeader); 	//(4)调用消息码对应的成员函数来处理
-					// 收包, 检测crc, 填充包
-					msgSend(p_sendbuf);  
-						m_MsgSendQueue.push_back(psendbuf);     // void* CSocekt::ServerSendQueueThread(void* threadData)  //专门用来发送数据的线程, 交给发送线程处理
-						sem_post(&m_semEventSendQueue）
+无论是作为 C++ Linux 服务端开发的学习基石，还是作为轻量级业务服务器的底层框架，本项目都提供了极具参考价值的源码实现。
 
+## **✨ 核心特性**
 
+* ⚡ **高性能网络 I/O**: 基于 epoll 边缘触发 (ET) 模式和非阻塞套接字，最大化网络吞吐量。  
+* 🛡️ **工业级架构**: 借鉴 Nginx 的 Master-Worker 多进程模型，支持守护进程 (Daemon) 模式后台运行。  
+* 🧵 **并发线程池**: 自定义实现的高效 C++ 线程池，将网络数据收发与核心业务逻辑完美解耦。  
+* 📦 **完美的协议解析**: 采用“包头 \+ 包体”的自定义通信协议，内部通过精准的内存偏移计算，彻底解决 TCP 通信中的粘包、半包问题。  
+* 🛠️ **完善的配套工具**:  
+  * 🖥️ **Qt 可视化客户端**: /qt-client 目录下包含基于 Qt 编写的图形化测试客户端。  
+  * 🐍 **Python 压测脚本**: /python\_test 目录下包含 TCP 和 Redis 的高并发压力测试脚本。
 
-ngx_write_request_handler													//写操作
-	sendproc(pConn,pConn->psendbuf,pConn->isendlen);
-	sem_post(&m_semEventSendQueue);											//触发线程处理  
-		void* CSocekt::ServerSendQueueThread(void* threadData)						//专门用来发送数据的线程
-		sem_wait(&pSocketObj->m_semEventSendQueue)								//等待触发
-          	sendsize = pSocketObj->sendproc(p_Conn,p_Conn->psendbuf,p_Conn->isendlen); //注意参数
-```
+## **📂 核心目录结构**
+
+Learn\_EpollServer/  
+├── app/          \# 主程序入口、配置文件加载、核心初始化  
+├── net/          \# 网络层：Socket 封装、连接池、Epoll 事件分发  
+├── logic/        \# 业务逻辑层：业务请求注册与处理  
+├── misc/         \# 杂项模块：内存池、线程池、CRC32 校验  
+├── proc/         \# 进程管理：守护进程、Master-Worker 进程循环  
+├── signal/       \# 信号处理模块  
+├── qt-client/    \# Qt 图形化 TCP 测试客户端  
+└── python\_test/  \# 并发压力测试脚本
+
+## **🚀 编译与运行**
+
+### **环境要求**
+
+* 操作系统：Linux (推荐 Ubuntu / CentOS)  
+* 编译器：GCC / G++ (支持 C++98/03，即将升级 C++11)  
+* 构建工具：Make
+
+### **快速启动**
+
+1. **编译服务端程序**：  
+   在项目根目录下执行：  
+   make
+
+   编译成功后，根目录下会生成可执行文件 nginx。  
+2. **运行服务端**：  
+   ./nginx
+
+   *注：默认可能以守护进程模式运行，可通过修改 nginx.conf 配置文件调整行为。*
+
+## **🔮 路线图 (Roadmap)**
+
+本项目正处于持续迭代中，未来的版本演进计划如下：
+
+* \[x\] **v0.1**: 核心 Epoll 框架实现、线程池、解决 TCP 粘包、Qt 测试客户端。  
+* \[ \] **v0.2**: 引入 **MySQL 数据库**支持，并实现高可用**数据库连接池**。  
+* \[ \] **v0.3**: 集成 **Redis**，实现 **Cache-Aside (旁路缓存)** 架构，进一步提升读取性能与系统并发瓶颈。
+
+## **🤝 参与贡献**
+
+欢迎任何对 C++ 后端开发感兴趣的开发者提交 Issue 或 Pull Request。如果您觉得这个项目对您的学习有帮助，欢迎点亮 ⭐️ **Star**！
