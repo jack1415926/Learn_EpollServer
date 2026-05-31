@@ -1,0 +1,40 @@
+# ==========================================
+# 针对 Learn_EpollServer 的全局 Git 忽略规则
+# ==========================================
+
+# 1. 系统与编辑器临时文件
+.DS_Store
+Thumbs.db
+*.bak
+*.tmp
+*.temp
+.vs/
+.vscode/
+
+# 2. C/C++ 编译中间产物（过滤那几十个 .o 和 .d 文件，非常关键！）
+*.o
+*.obj
+*.d
+*.out
+*.app
+*.exe
+nginx/app/link_obj/
+nginx/app/dep/
+
+# 3. Qt 自动生成的构建缓存和配置文件
+/*/build/
+/qt-client/build/
+*.user
+*.user.*
+.ninja_deps
+.ninja_log
+build.ninja
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+qtcsettings.cmake
+LastTest.log
+
+# 4. 运行日志与编译出来的服务端程序二进制文件
+*.log
+nginx/nginx
