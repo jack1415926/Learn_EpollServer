@@ -24,6 +24,7 @@ typedef struct _STRUCT_REGISTER
 
 typedef struct _STRUCT_LOGIN
 {
+	int           iResult;        //响应：0成功 1失败 2DB错误 3池超时；请求时客户端填0即可
 	char          username[56];   //用户名 
 	char          password[40];   //密码
 

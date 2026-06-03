@@ -14,6 +14,7 @@
 #include <sys/ioctl.h> //ioctl
 #include <arpa/inet.h>
 #include <pthread.h>   //多线程
+#include <memory>
 
 #include "ngx_c_conf.h"
 #include "ngx_macro.h"
@@ -24,7 +25,9 @@
 #include "ngx_c_crc32.h"
 #include "ngx_c_slogic.h"  
 #include "ngx_logiccomm.h"  
-#include "ngx_c_lockmutex.h"  
+#include "ngx_c_lockmutex.h"
+#include "ngx_c_mysql_connpool.h"
+#include "ngx_c_mysql_dao.h"
 
 //定义成员函数指针
 typedef bool (CLogicSocket::*handler)(  lpngx_connection_t pConn,      //连接池中连接的指针
@@ -273,37 +276,38 @@ bool CLogicSocket::_HandleRegister(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER p
     p_RecvInfo->password[sizeof(p_RecvInfo->password)-1]=0;//这非常关键，防止客户端发送过来畸形包，导致服务器直接使用这个数据出现错误。 
 
 
-    //(4)这里可能要考虑 根据业务逻辑，进一步判断收到的数据的合法性，
-       //当前该玩家的状态是否适合收到这个数据等等【比如如果用户没登陆，它就不适合购买物品等等】
+    int dbResult = NGX_DB_ERR_POOL;
+    std::shared_ptr<MYSQL> mysql_conn = CMysqlConnPool::GetInstance()->GetConnection();
+    if (mysql_conn) {
+        dbResult = CMysqlDao::RegisterUser(mysql_conn.get(),
+                                           p_RecvInfo->username,
+                                           p_RecvInfo->password);
+    } else {
+        ngx_log_stderr(0, "_HandleRegister: 获取 MySQL 连接失败");
+    }
 
-    //(5)给客户端返回数据时，一般也是返回一个结构，这个结构内容具体由客户端/服务器协商，这里我们就以给客户端也返回同样的 STRUCT_REGISTER 结构来举例    
-    //LPSTRUCT_REGISTER pFromPkgHeader =  (LPSTRUCT_REGISTER)(((char *)pMsgHeader)+m_iLenMsgHeader);	//指向收到的包的包头，其中数据后续可能要用到
 	LPCOMM_PKG_HEADER pPkgHeader;	
 	CMemory  *p_memory = CMemory::GetInstance();
 	CCRC32   *p_crc32 = CCRC32::GetInstance();
     int iSendLen = sizeof(STRUCT_REGISTER);  
-    //a)分配要发送出去的包的内存
 
-    char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader+m_iLenPkgHeader+iSendLen,false);//准备发送的格式，这里是 消息头+包头+包体
-    //b)填充消息头
-    memcpy(p_sendbuf,pMsgHeader,m_iLenMsgHeader);                   //消息头直接拷贝到这里来
-    //c)填充包头
-    pPkgHeader = (LPCOMM_PKG_HEADER)(p_sendbuf+m_iLenMsgHeader);    //指向包头
-    pPkgHeader->msgCode = _CMD_REGISTER;	                        //消息代码，可以统一在ngx_logiccomm.h中定义
-    pPkgHeader->msgCode = htons(pPkgHeader->msgCode);	            //htons主机序转网络序 
-    pPkgHeader->pkgLen  = htons(m_iLenPkgHeader + iSendLen);        //整个包的尺寸【包头+包体尺寸】 
-    //d)填充包体
-    LPSTRUCT_REGISTER p_sendInfo = (LPSTRUCT_REGISTER)(p_sendbuf+m_iLenMsgHeader+m_iLenPkgHeader);	//跳过消息头，跳过包头，就是包体了
-    //。。。。。这里根据需要，填充要发回给客户端的内容,int类型要使用htonl()转，short类型要使用htons()转；
-    
-    //e)包体内容全部确定好后，计算包体的crc32值
+    char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader+m_iLenPkgHeader+iSendLen,false);
+    memcpy(p_sendbuf,pMsgHeader,m_iLenMsgHeader);
+    pPkgHeader = (LPCOMM_PKG_HEADER)(p_sendbuf+m_iLenMsgHeader);
+    pPkgHeader->msgCode = _CMD_REGISTER;
+    pPkgHeader->msgCode = htons(pPkgHeader->msgCode);
+    pPkgHeader->pkgLen  = htons(m_iLenPkgHeader + iSendLen);
+    LPSTRUCT_REGISTER p_sendInfo = (LPSTRUCT_REGISTER)(p_sendbuf+m_iLenMsgHeader+m_iLenPkgHeader);
+    memset(p_sendInfo, 0, iSendLen);
+    p_sendInfo->iType = htonl(dbResult);
+    strncpy(p_sendInfo->username, p_RecvInfo->username, sizeof(p_sendInfo->username) - 1);
+    strncpy(p_sendInfo->password, p_RecvInfo->password, sizeof(p_sendInfo->password) - 1);
+
     pPkgHeader->crc32   = p_crc32->Get_CRC((unsigned char *)p_sendInfo,iSendLen);
-    pPkgHeader->crc32   = htonl(pPkgHeader->crc32);		
-
-    //f)发送数据包
+    pPkgHeader->crc32   = htonl(pPkgHeader->crc32);
     msgSend(p_sendbuf);
-  
-    return true;
+
+    return (dbResult == NGX_DB_OK);
 }
 bool CLogicSocket::_HandleLogIn(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsgHeader,char *pPkgBody,unsigned short iBodyLength)
 {    
@@ -318,9 +322,23 @@ bool CLogicSocket::_HandleLogIn(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsg
     }
     CLock lock(&pConn->logicPorcMutex);
         
-    LPSTRUCT_LOGIN p_RecvInfo = (LPSTRUCT_LOGIN)pPkgBody;     
+    LPSTRUCT_LOGIN p_RecvInfo = (LPSTRUCT_LOGIN)pPkgBody;
+    p_RecvInfo->iResult = ntohl(p_RecvInfo->iResult);
     p_RecvInfo->username[sizeof(p_RecvInfo->username)-1]=0;
     p_RecvInfo->password[sizeof(p_RecvInfo->password)-1]=0;
+
+    int dbResult = NGX_DB_ERR_POOL;
+    std::shared_ptr<MYSQL> mysql_conn = CMysqlConnPool::GetInstance()->GetConnection();
+    if (mysql_conn) {
+        dbResult = CMysqlDao::VerifyLogin(mysql_conn.get(),
+                                          p_RecvInfo->username,
+                                          p_RecvInfo->password);
+        if (dbResult != NGX_DB_OK) {
+            dbResult = NGX_DB_ERR_FAILED;
+        }
+    } else {
+        ngx_log_stderr(0, "_HandleLogIn: 获取 MySQL 连接失败");
+    }
 
 	LPCOMM_PKG_HEADER pPkgHeader;	
 	CMemory  *p_memory = CMemory::GetInstance();
@@ -334,11 +352,13 @@ bool CLogicSocket::_HandleLogIn(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsg
     pPkgHeader->msgCode = htons(pPkgHeader->msgCode);
     pPkgHeader->pkgLen  = htons(m_iLenPkgHeader + iSendLen);    
     LPSTRUCT_LOGIN p_sendInfo = (LPSTRUCT_LOGIN)(p_sendbuf+m_iLenMsgHeader+m_iLenPkgHeader);
+    memset(p_sendInfo, 0, iSendLen);
+    p_sendInfo->iResult = htonl(dbResult);
+    strncpy(p_sendInfo->username, p_RecvInfo->username, sizeof(p_sendInfo->username) - 1);
     pPkgHeader->crc32   = p_crc32->Get_CRC((unsigned char *)p_sendInfo,iSendLen);
-    pPkgHeader->crc32   = htonl(pPkgHeader->crc32);		   
-    //ngx_log_stderr(0,"成功收到了登录并返回结果！");
+    pPkgHeader->crc32   = htonl(pPkgHeader->crc32);
     msgSend(p_sendbuf);
-    return true;
+    return (dbResult == NGX_DB_OK);
 }
 
 bool CLogicSocket::_HandlePing(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsgHeader,char *pPkgBody,unsigned short iBodyLength)

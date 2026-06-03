@@ -68,7 +68,7 @@ $(BIN):$(LINK_OBJ)
 	@echo "------------------------build $(VERSION) mode--------------------------------!!!"
 
 # 【修改2】：增加库目录及运行时环境变量，防止程序启动时找不到 libredis++.so
-	$(CC) -o $@ $^ -L/usr/local/lib -lpthread -lredis++ -lhiredis -Wl,-rpath=/usr/local/lib
+	$(CC) -o $@ $^ -L/usr/local/lib -lpthread -lredis++ -lhiredis -lmysqlclient -Wl,-rpath=/usr/local/lib
 
 #----------------------------------------------------------------1end-------------------
 

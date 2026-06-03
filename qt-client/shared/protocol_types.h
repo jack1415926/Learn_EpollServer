@@ -27,8 +27,9 @@ struct StructRegister {
 };
 
 struct StructLogin {
-    char username[56];
-    char password[40];
+    std::int32_t iResult;     // 响应：0成功；请求填0
+    char         username[56];
+    char         password[40];
 };
 
 #pragma pack(pop)

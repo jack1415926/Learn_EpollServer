@@ -10,6 +10,7 @@
 #include "ngx_func.h"
 #include "ngx_macro.h"
 #include "ngx_c_conf.h"
+#include "ngx_c_mysql_connpool.h"
 
 //函数声明
 static void ngx_start_worker_processes(int threadnums);
@@ -161,6 +162,7 @@ static void ngx_worker_process_cycle(int inum,const char *pprocname)
     //如果从这个循环跳出来
     g_threadpool.StopAll();      //考虑在这里停止线程池；
     g_socket.Shutdown_subproc(); //socket需要释放的东西考虑释放；
+    CMysqlConnPool::GetInstance()->Destroy();
     return;
 }
 
@@ -189,6 +191,29 @@ static void ngx_worker_process_init(int inum)
     {
         //内存没释放，但是简单粗暴退出；
         exit(-2);
+    }
+
+    // MySQL 连接池：必须在 fork 之后的 Worker 内初始化，禁止在 master 进程 Init
+    {
+        const char *mysql_host = p_config->GetString("MysqlHost");
+        const char *mysql_user = p_config->GetString("MysqlUser");
+        const char *mysql_pass = p_config->GetString("MysqlPassword");
+        const char *mysql_db = p_config->GetString("MysqlDatabase");
+        if (mysql_host == NULL) mysql_host = "127.0.0.1";
+        if (mysql_user == NULL) mysql_user = "root";
+        if (mysql_pass == NULL) mysql_pass = "";
+        if (mysql_db == NULL) mysql_db = "epoll_db";
+        int mysql_port = p_config->GetIntDefault("MysqlPort", 3306);
+        int pool_size = p_config->GetIntDefault("MysqlPoolSize", 8);
+        if (CMysqlConnPool::GetInstance()->Init(mysql_host,
+                                                static_cast<unsigned int>(mysql_port),
+                                                mysql_user,
+                                                mysql_pass,
+                                                mysql_db,
+                                                pool_size) == false) {
+            ngx_log_stderr(0, "ngx_worker_process_init() MySQL 连接池 Init 失败");
+            exit(-2);
+        }
     }
     
     //如下这些代码参照官方nginx里的ngx_event_process_init()函数中的代码
