@@ -143,3 +143,80 @@ int CMysqlDao::VerifyLogin(MYSQL *conn, const char *username, const char *passwo
     }
     return ExecLoginStmt(conn, username, password);
 }
+
+static int ExecGetUserByIdStmt(MYSQL *conn, int64_t userId, UserInfoDto &out)
+{
+    const char *sql = "SELECT id, username FROM users WHERE id = ? LIMIT 1";
+
+    MYSQL_STMT *stmt = mysql_stmt_init(conn);
+    if (stmt == nullptr) {
+        return NGX_DB_ERR_FAILED;
+    }
+
+    if (mysql_stmt_prepare(stmt, sql, static_cast<unsigned long>(strlen(sql))) != 0) {
+        mysql_stmt_close(stmt);
+        return NGX_DB_ERR_FAILED;
+    }
+
+    MYSQL_BIND param;
+    memset(&param, 0, sizeof(param));
+    int64_t bind_id = userId;
+    param.buffer_type = MYSQL_TYPE_LONGLONG;
+    param.buffer = reinterpret_cast<char *>(&bind_id);
+    param.is_unsigned = false;
+
+    if (mysql_stmt_bind_param(stmt, &param) != 0) {
+        mysql_stmt_close(stmt);
+        return NGX_DB_ERR_FAILED;
+    }
+
+    if (mysql_stmt_execute(stmt) != 0) {
+        mysql_stmt_close(stmt);
+        return NGX_DB_ERR_FAILED;
+    }
+
+    int64_t out_id = 0;
+    char out_name[56] = {0};
+    unsigned long name_len = 0;
+    bool id_null = false;
+    bool name_null = false;
+
+    MYSQL_BIND result[2];
+    memset(result, 0, sizeof(result));
+
+    result[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    result[0].buffer = reinterpret_cast<char *>(&out_id);
+    result[0].is_null = &id_null;
+
+    result[1].buffer_type = MYSQL_TYPE_STRING;
+    result[1].buffer = out_name;
+    result[1].buffer_length = sizeof(out_name) - 1;
+    result[1].length = &name_len;
+    result[1].is_null = &name_null;
+
+    if (mysql_stmt_bind_result(stmt, result) != 0) {
+        mysql_stmt_close(stmt);
+        return NGX_DB_ERR_FAILED;
+    }
+
+    int fetch_code = mysql_stmt_fetch(stmt);
+    mysql_stmt_close(stmt);
+
+    if (fetch_code != 0 || id_null || name_null) {
+        return NGX_DB_ERR_FAILED;
+    }
+
+    out.id = out_id;
+    strncpy(out.username, out_name, sizeof(out.username) - 1);
+    out.username[sizeof(out.username) - 1] = '\0';
+    return NGX_DB_OK;
+}
+
+int CMysqlDao::GetUserById(MYSQL *conn, int64_t userId, UserInfoDto &out)
+{
+    if (conn == nullptr || userId <= 0) {
+        return NGX_DB_ERR_FAILED;
+    }
+    memset(&out, 0, sizeof(out));
+    return ExecGetUserByIdStmt(conn, userId, out);
+}

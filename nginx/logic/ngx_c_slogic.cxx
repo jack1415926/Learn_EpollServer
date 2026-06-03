@@ -28,6 +28,7 @@
 #include "ngx_c_lockmutex.h"
 #include "ngx_c_mysql_connpool.h"
 #include "ngx_c_mysql_dao.h"
+#include "ngx_c_user_cache.h"
 
 //定义成员函数指针
 typedef bool (CLogicSocket::*handler)(  lpngx_connection_t pConn,      //连接池中连接的指针
@@ -48,10 +49,65 @@ static const handler statusHandler[] =
     //开始处理具体的业务逻辑
     &CLogicSocket::_HandleRegister,                         //【5】：实现具体的注册功能
     &CLogicSocket::_HandleLogIn,                            //【6】：实现具体的登录功能
+    &CLogicSocket::_HandleGetUserInfo,                       //【7】：Cache-Aside 查询用户信息
     //......其他待扩展，比如实现攻击功能，实现加血功能等等；
 
 
 };
+
+static int64_t ngx_ntoh64(int64_t n)
+{
+    uint64_t v = 0;
+    memcpy(&v, &n, sizeof(v));
+    uint64_t r = ((v & 0xFF00000000000000ULL) >> 56) |
+                 ((v & 0x00FF000000000000ULL) >> 40) |
+                 ((v & 0x0000FF0000000000ULL) >> 24) |
+                 ((v & 0x000000FF00000000ULL) >> 8)  |
+                 ((v & 0x00000000FF000000ULL) << 8)  |
+                 ((v & 0x0000000000FF0000ULL) << 24) |
+                 ((v & 0x000000000000FF00ULL) << 40) |
+                 ((v & 0x00000000000000FFULL) << 56);
+    int64_t out = 0;
+    memcpy(&out, &r, sizeof(out));
+    return out;
+}
+
+static int64_t ngx_hton64(int64_t n)
+{
+    return ngx_ntoh64(n);
+}
+
+static void SendGetUserInfoResponse(CLogicSocket *self,
+                                    LPSTRUC_MSG_HEADER pMsgHeader,
+                                    int iResult,
+                                    int64_t userId,
+                                    const char *username)
+{
+    CMemory *p_memory = CMemory::GetInstance();
+    CCRC32 *p_crc32 = CCRC32::GetInstance();
+    const int iSendLen = sizeof(STRUCT_GET_USER_INFO_RESP);
+
+    char *p_sendbuf = (char *)p_memory->AllocMemory(self->m_iLenMsgHeader + self->m_iLenPkgHeader + iSendLen, false);
+    memcpy(p_sendbuf, pMsgHeader, self->m_iLenMsgHeader);
+
+    LPCOMM_PKG_HEADER pPkgHeader = (LPCOMM_PKG_HEADER)(p_sendbuf + self->m_iLenMsgHeader);
+    pPkgHeader->msgCode = _CMD_GET_USER_INFO;
+    pPkgHeader->msgCode = htons(pPkgHeader->msgCode);
+    pPkgHeader->pkgLen = htons(self->m_iLenPkgHeader + iSendLen);
+
+    LPSTRUCT_GET_USER_INFO_RESP p_sendInfo =
+        (LPSTRUCT_GET_USER_INFO_RESP)(p_sendbuf + self->m_iLenMsgHeader + self->m_iLenPkgHeader);
+    memset(p_sendInfo, 0, iSendLen);
+    p_sendInfo->iResult = htonl(iResult);
+    p_sendInfo->userId = ngx_hton64(userId);
+    if (username) {
+        strncpy(p_sendInfo->username, username, sizeof(p_sendInfo->username) - 1);
+    }
+
+    pPkgHeader->crc32 = p_crc32->Get_CRC((unsigned char *)p_sendInfo, iSendLen);
+    pPkgHeader->crc32 = htonl(pPkgHeader->crc32);
+    self->msgSend(p_sendbuf);
+}
 #define AUTH_TOTAL_COMMANDS sizeof(statusHandler)/sizeof(handler) //整个命令有多少个，编译时即可知道
 
 //构造函数
@@ -359,6 +415,61 @@ bool CLogicSocket::_HandleLogIn(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsg
     pPkgHeader->crc32   = htonl(pPkgHeader->crc32);
     msgSend(p_sendbuf);
     return (dbResult == NGX_DB_OK);
+}
+
+bool CLogicSocket::_HandleGetUserInfo(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader,
+                                      char *pPkgBody, unsigned short iBodyLength)
+{
+    if (pPkgBody == NULL) {
+        return false;
+    }
+    if (static_cast<unsigned short>(sizeof(STRUCT_GET_USER_INFO_REQ)) != iBodyLength) {
+        return false;
+    }
+
+    CLock lock(&pConn->logicPorcMutex);
+
+    LPSTRUCT_GET_USER_INFO_REQ p_recv = (LPSTRUCT_GET_USER_INFO_REQ)pPkgBody;
+    int64_t userId = ngx_ntoh64(p_recv->userId);
+    if (userId <= 0) {
+        SendGetUserInfoResponse(this, pMsgHeader, NGX_USER_ERR_BADREQ, 0, nullptr);
+        return false;
+    }
+
+    UserInfoDto cached{};
+    bool isNullCached = false;
+    if (m_pRedis != nullptr &&
+        CUserCacheService::TryGetFromCache(m_pRedis, userId, cached, &isNullCached)) {
+        SendGetUserInfoResponse(this, pMsgHeader, NGX_USER_OK, cached.id, cached.username);
+        return true;
+    }
+    if (isNullCached) {
+        SendGetUserInfoResponse(this, pMsgHeader, NGX_USER_NOT_FOUND, userId, nullptr);
+        return false;
+    }
+
+    std::shared_ptr<MYSQL> mysql_conn = CMysqlConnPool::GetInstance()->GetConnection();
+    if (!mysql_conn) {
+        ngx_log_stderr(0, "_HandleGetUserInfo: 获取 MySQL 连接失败");
+        SendGetUserInfoResponse(this, pMsgHeader, NGX_USER_ERR_BACKEND, userId, nullptr);
+        return false;
+    }
+
+    UserInfoDto dbUser{};
+    int dbResult = CMysqlDao::GetUserById(mysql_conn.get(), userId, dbUser);
+    if (dbResult == NGX_DB_OK) {
+        if (m_pRedis != nullptr) {
+            CUserCacheService::SetUserCache(m_pRedis, userId, dbUser, 0);
+        }
+        SendGetUserInfoResponse(this, pMsgHeader, NGX_USER_OK, dbUser.id, dbUser.username);
+        return true;
+    }
+
+    if (m_pRedis != nullptr) {
+        CUserCacheService::SetNullUserCache(m_pRedis, userId, 0);
+    }
+    SendGetUserInfoResponse(this, pMsgHeader, NGX_USER_NOT_FOUND, userId, nullptr);
+    return false;
 }
 
 bool CLogicSocket::_HandlePing(lpngx_connection_t pConn,LPSTRUC_MSG_HEADER pMsgHeader,char *pPkgBody,unsigned short iBodyLength)

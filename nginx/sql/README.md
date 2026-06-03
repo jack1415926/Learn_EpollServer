@@ -67,9 +67,42 @@ mysql -u epoll_user -pepoll_pass -e "SELECT id,username,created_at FROM epoll_db
 
 `WorkerProcesses × MysqlPoolSize` = 总 MySQL 连接上限（例如 4×16=64），请保证 `max_connections` 足够。
 
-## 8. 面试要点
+## 8. GetUserInfo 与 Cache-Aside
+
+命令码 `_CMD_GET_USER_INFO`（`msgCode = 7`）。
+
+| 包体 | 说明 |
+|------|------|
+| 请求 | `int64_t userId`（网络大端） |
+| 响应 | `iResult`(4) + `userId`(8) + `username[56]` |
+
+**`iResult`（GetUserInfo）**
+
+| 值 | 含义 |
+|----|------|
+| 0 | 成功 |
+| 1 | 用户不存在（含空值缓存命中） |
+| 2 | 参数非法 |
+| 3 | Redis/MySQL 不可用或连接池超时 |
+
+**Redis 键**（与 L2 限流 `RateLimit:{ip}` 隔离）：
+
+- 正常：`user:info:{userId}` → JSON `{"id":1001,"username":"alice"}`，TTL 默认 3600s（`[Cache] UserInfoCacheTtlSec`）
+- 穿透保护：值 `NULL_USER`，TTL 默认 60s（`NullUserCacheTtlSec`）
+
+```bash
+# 先确保 users 表有数据（注册或 INSERT）
+python3 test_register_login.py
+python3 test_get_user_info.py
+
+redis-cli GET user:info:1
+redis-cli TTL user:info:99999
+```
+
+## 9. 面试要点
 
 - `std::shared_ptr<MYSQL>` + 自定义 Deleter：作用域结束 **归还队列**，不 `mysql_close`
 - `std::unique_lock` + `condition_variable::wait_for`：空闲连接等待与超时
 - 预处理语句 `MYSQL_STMT`：防 SQL 注入
 - fork 后 per-worker 独立连接池
+- Cache-Aside：先 `GET user:info:{id}`，未命中查库后 `SET`；无用户写 `NULL_USER` 短 TTL 防穿透
