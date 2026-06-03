@@ -13,7 +13,7 @@ Windows 本机 Qt6 桌面客户端，通过 TCP 对接 VMware 内 Linux epoll �
 
 - **客户端发送**：仅 `COMM_PKG_HEADER`（8 字节），无服务端内部消息头。
 - **服务端回复**：同样仅 8 字节包头（`msgCode = 0` 表示 Ping）。
-- 定义见 `shared/protocol_types.h`，与 `nginx/_include/ngx_comm.h`、`ngx_logiccomm.h` 对齐。
+- 定义见 `shared/protocol_types.h`，与 `server/include/ngx_comm.h`、`ngx_logiccomm.h` 对齐。
 
 ## 环境要求
 
@@ -43,7 +43,7 @@ cmake --build build --config Release
 ## 与 VM 服务端联调
 
 1. 在 VM 内启动 Redis（若服务端启用 L2）：`redis-server`
-2. 在 `nginx` 目录：`./nginx`（或你的启动方式）
+2. 在 `server` 目录：`./nginx`（或你的启动方式）
 3. 确认监听：`ss -lntp | grep 8080`
 4. 网络任选其一：
    - **NAT + 端口转发**：Windows 连 `127.0.0.1:8080`（需在 VMware 配置端口映射）

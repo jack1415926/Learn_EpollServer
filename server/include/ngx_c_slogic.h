@@ -1,4 +1,4 @@
-﻿
+
 #ifndef __NGX_C_SLOGIC_H__
 #define __NGX_C_SLOGIC_H__
 

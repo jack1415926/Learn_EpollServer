@@ -11,14 +11,14 @@ sudo systemctl start mysql
 ## 2. 建库建表与业务账号
 
 ```bash
-cd ~/Learn_EpollServer-main/nginx/sql
+cd ~/Learn_EpollServer-main/sql
 sudo mysql -u root -p < init_users.sql
 ```
 
 默认创建：
 
 - 库：`epoll_db`
-- 用户：`epoll_user` / `epoll_pass`（与 [`nginx.conf`](../nginx.conf) `[Mysql]` 段一致）
+- 用户：`epoll_user` / `epoll_pass`（与 [`server/nginx.conf`](../server/nginx.conf) `[Mysql]` 段一致）
 
 ## 3. 配置 nginx.conf
 
@@ -37,7 +37,7 @@ MysqlPoolSize = 16
 ## 4. 编译与启动
 
 ```bash
-cd ~/Learn_EpollServer-main/nginx
+cd ~/Learn_EpollServer-main/server
 make clean && make
 ./nginx
 ```
