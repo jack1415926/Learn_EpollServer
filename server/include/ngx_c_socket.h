@@ -48,7 +48,8 @@ struct ngx_connection_s
 	lpngx_listening_t         listening;                     //如果这个链接被分配给了一个监听套接字，那么这个里边就指向监听套接字对应的那个lpngx_listening_t的内存首地址		
 
 	//------------------------------------	
-	uint64_t                  iCurrsequence;                 //我引入的一个序号，每次分配出去时+1，此法也有可能在一定程度上检测错包废包，具体怎么用，用到了再说
+	std::atomic<uint64_t>     iCurrsequence; // invalidates queued work on close/reuse
+	std::atomic<int>          activeJobs{0}; // prevents reuse while business code runs
 	struct sockaddr           s_sockaddr;                    //保存对方地址信息用的
 	//char                      addr_text[100]; //地址的文本信息，100足够，一般其实如果是ipv4地址，255.255.255.255，其实只需要20字节就够
 
@@ -79,7 +80,7 @@ struct ngx_connection_s
 	time_t                    inRecyTime;                     //入到资源回收站里去的时间
 
 	//和心跳包有关
-	time_t                    lastPingTime;                   //上次ping的时间【上次发送心跳包的事件】
+	std::atomic<time_t>       lastPingTime; // business thread writes; timer reads
 
 	//和网络安全有关	
 	uint64_t                  FloodkickLastTime;              //Flood攻击上次收到包的时间
@@ -109,6 +110,9 @@ public:
 	virtual bool Initialize();                                            //初始化函数[父进程中执行]
 	virtual bool Initialize_subproc();                                    //初始化函数[子进程中执行]
 	virtual void Shutdown_subproc();                                      //关闭退出函数[子进程中执行]
+	void StopReceiving(); // main thread: remove listeners and disable request intake
+	bool DrainSendQueue(int timeoutMs); // bounded flushing after business threads join
+	void CloseListeningSockets(); // also used by Master (no Worker locks needed)
 
 	void printTDInfo();                                                   //打印统计信息
 
@@ -188,6 +192,10 @@ private:
 	
 	
 protected:
+	// ponytail: serialize short network-state operations per Worker; shard only if measured.
+	// Lock order: m_ioMutex -> queue/pool/timer mutexes. Never hold it during DB/Redis calls.
+	std::recursive_mutex m_ioMutex;
+	bool m_draining = false;
 	//一些和网络通讯有关的成员变量
 	size_t                         m_iLenPkgHeader;                       //sizeof(COMM_PKG_HEADER);		
 	size_t                         m_iLenMsgHeader;                       //sizeof(STRUC_MSG_HEADER);

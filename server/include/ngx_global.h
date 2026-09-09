@@ -38,7 +38,8 @@ extern pid_t         ngx_pid;
 extern pid_t         ngx_parent;
 extern ngx_log_t     ngx_log;
 extern int           ngx_process;   
-extern sig_atomic_t  ngx_reap;   
-extern int           g_stopEvent;
+extern volatile sig_atomic_t ngx_reap;
+extern volatile sig_atomic_t ngx_shutdown; // signal handler writes; main thread reads
+extern std::atomic<int> g_stopEvent;        // main thread stops background threads
 
 #endif

@@ -288,7 +288,7 @@ ssize_t CSocekt::sendproc(lpngx_connection_t c,char *buff,ssize_t size)  //ssize
 
     for ( ;; )
     {
-        n = send(c->fd, buff, size, 0); //send()系统函数， 最后一个参数flag，一般为0； 
+        n = send(c->fd, buff, size, MSG_NOSIGNAL); //send()系统函数， 最后一个参数flag，一般为0；
         if(n > 0) //成功发送了一些数据
         {        
             return n; //返回本次发送的字节数
@@ -340,6 +340,12 @@ void CSocekt::ngx_write_request_handler(lpngx_connection_t pConn)
     {
         //这不太可能，可以发送数据时通知我发送数据，我发送时你却通知我发送缓冲区满？
         ngx_log_stderr(errno,"CSocekt::ngx_write_request_handler()时if(sendsize == -1)成立，这很怪异。"); //打印个日志，别的先不干啥
+        return;
+    }
+
+    if (sendsize <= 0)
+    {
+        zdClosesocketProc(pConn);
         return;
     }
 

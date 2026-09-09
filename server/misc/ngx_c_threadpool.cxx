@@ -114,7 +114,7 @@ void* CThreadPool::ThreadFunc(void* threadData)
         }
 
         //先判断线程退出这个条件
-        if(m_shutdown)
+        if(m_shutdown && pThreadPoolObj->m_MsgRecvQueue.empty())
         {   
             pthread_mutex_unlock(&m_pthreadMutex); //解锁互斥量
             break;                     
@@ -147,15 +147,18 @@ void* CThreadPool::ThreadFunc(void* threadData)
 //停止所有线程【等待结束线程池中所有线程，该函数返回后，应该是所有线程池中线程都结束了】
 void CThreadPool::StopAll() 
 {
+    pthread_mutex_lock(&m_pthreadMutex);
     //(1)已经调用过，就不要重复调用了
     if(m_shutdown == true)
     {
+        pthread_mutex_unlock(&m_pthreadMutex);
         return;
     }
     m_shutdown = true;
 
     //(2)唤醒等待该条件【卡在pthread_cond_wait()的】的所有线程，一定要在改变条件状态以后再给线程发信号
     int err = pthread_cond_broadcast(&m_pthreadCond); 
+    pthread_mutex_unlock(&m_pthreadMutex);
     if(err != 0)
     {
         //这肯定是有问题，要打印紧急日志
@@ -171,8 +174,8 @@ void CThreadPool::StopAll()
     }
 
     //流程走到这里，那么所有的线程池中的线程肯定都返回了；
-    pthread_mutex_destroy(&m_pthreadMutex);
-    pthread_cond_destroy(&m_pthreadCond);    
+    // All consumers joined; retain the mutex for idempotent StopAll().
+    // Static condition variable remains valid until process exit.
 
     //(4)释放一下new出来的ThreadItem【线程池中的线程】    
 	for(iter = m_threadVector.begin(); iter != m_threadVector.end(); iter++)

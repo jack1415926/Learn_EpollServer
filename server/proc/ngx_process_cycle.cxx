@@ -1,5 +1,9 @@
 ﻿
 #include <stdio.h>
+#include <algorithm>
+#include <vector>
+#include <sys/wait.h>
+#include "ngx_global.h"
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
@@ -20,9 +24,11 @@ static void ngx_worker_process_init(int inum);
 
 //变量声明
 static u_char  master_process[] = "master process";
+static std::vector<pid_t> worker_pids;
+static bool worker_start_failed = false;
 
 //描述：创建worker子进程
-void ngx_master_process_cycle()
+int ngx_master_process_cycle()
 {    
     sigset_t set;        //信号集
 
@@ -74,17 +80,47 @@ void ngx_master_process_cycle()
     int workprocess = p_config->GetIntDefault("WorkerProcesses",1); //从配置文件中得到要创建的worker进程数量
     ngx_start_worker_processes(workprocess);  //这里要创建worker子进程
 
-    //创建子进程后，父进程的执行流程会返回到这里，子进程不会走进来    
-    sigemptyset(&set); //信号屏蔽字为空，表示不屏蔽任何信号
-    
-    for ( ;; ) 
+    // Signals remain blocked outside sigsuspend: checking flags and sleeping is atomic.
+    sigemptyset(&set);
+    bool stopping = false;
+    int exitcode = (worker_start_failed || worker_pids.empty()) ? 1 : 0;
+    if (worker_start_failed || worker_pids.empty())
+        ngx_shutdown = 1;
+    while (!worker_pids.empty())
     {
-
-    
-        sigsuspend(&set); //阻塞在这里，等待一个信号，此时进程是挂起的，不占用cpu时间，只有收到信号才会被唤醒（返回）；
-
-    }// end for(;;)
-    return;
+        if (ngx_shutdown && !stopping)
+        {
+            stopping = true;
+            g_socket.CloseListeningSockets();
+            for (pid_t pid : worker_pids)
+                if (kill(pid, SIGTERM) == -1 && errno != ESRCH)
+                    ngx_log_error_core(NGX_LOG_ALERT, errno, "kill Worker %P failed", pid);
+        }
+        ngx_reap = 0;
+        int status;
+        pid_t pid;
+        while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+        {
+            worker_pids.erase(std::remove(worker_pids.begin(), worker_pids.end(), pid),
+                              worker_pids.end());
+            ngx_log_error_core(NGX_LOG_NOTICE, 0, "Worker %P reaped, status=%d", pid, status);
+            // Fail-stop policy: an unexpected Worker exit shuts down its siblings.
+            if (!stopping || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+            {
+                exitcode = 1;
+                ngx_shutdown = 1;
+            }
+        }
+        if (pid == -1 && errno == ECHILD)
+            worker_pids.clear();
+        if (worker_pids.empty())
+            break;
+        if (ngx_shutdown && !stopping)
+            continue;
+        sigsuspend(&set);
+    }
+    g_socket.CloseListeningSockets();
+    return exitcode;
 }
 
 //描述：根据给定的参数创建指定数量的子进程，因为以后可能要扩展功能，增加参数，所以单独写成一个函数
@@ -94,7 +130,9 @@ static void ngx_start_worker_processes(int threadnums)
     int i;
     for (i = 0; i < threadnums; i++)  //master进程在走这个循环，来创建若干个子进程
     {
-        ngx_spawn_process(i,"worker process");
+        int pid = ngx_spawn_process(i,"worker process");
+        if (pid > 0) worker_pids.push_back(pid);
+        else worker_start_failed = true;
     } //end for
     return;
 }
@@ -117,7 +155,7 @@ static int ngx_spawn_process(int inum,const char *pprocname)
         ngx_parent = ngx_pid;              //因为是子进程了，所有原来的pid变成了父pid
         ngx_pid = getpid();                //重新获取pid,即本子进程的pid
         ngx_worker_process_cycle(inum,pprocname);    //我希望所有worker子进程，在这个函数里不断循环着不出来，也就是说，子进程流程不往下边走;
-        break;
+        exit(0); // never return into the Master fork loop
 
     default: //这个应该是父进程分支，直接break;，流程往switch之后走            
         break;
@@ -142,55 +180,29 @@ static void ngx_worker_process_cycle(int inum,const char *pprocname)
     ngx_log_error_core(NGX_LOG_NOTICE,0,"%s %P 【worker进程】启动并开始运行......!",pprocname,ngx_pid); //设置标题时顺便记录下来进程名，进程id等信息到日志
 
 
-    //测试代码，测试线程池的关闭
-    //sleep(5); //休息5秒        
-    //g_threadpool.StopAll(); //测试Create()后立即释放的效果
+    while (!ngx_shutdown)
+        ngx_process_events_and_timers();
 
-    //暂时先放个死循环，我们在这个循环里一直不出来
-    //setvbuf(stdout,NULL,_IONBF,0); //这个函数. 直接将printf缓冲区禁止， printf就直接输出了。
-    for(;;)
-    {
-
-      
-
-        ngx_process_events_and_timers(); //处理网络事件和定时器事件
-
-     
-
-    } //end for(;;)
-
-    //如果从这个循环跳出来
-    g_threadpool.StopAll();      //考虑在这里停止线程池；
-    g_socket.Shutdown_subproc(); //socket需要释放的东西考虑释放；
+    g_socket.StopReceiving();
+    g_threadpool.StopAll(); // drain accepted jobs; backend pools are still alive
+    if (!g_socket.DrainSendQueue(5000))
+        ngx_log_error_core(NGX_LOG_WARN, 0, "Worker send drain timed out; dropping pending responses");
+    g_stopEvent = 1;
+    g_socket.Shutdown_subproc();
     CMysqlConnPool::GetInstance()->Destroy();
-    return;
+    ngx_log_error_core(NGX_LOG_NOTICE, 0, "Worker %P shutdown complete", ngx_pid);
 }
 
 //描述：子进程创建时调用本函数进行一些初始化工作
 static void ngx_worker_process_init(int inum)
 {
-    sigset_t  set;      //信号集
-
-    sigemptyset(&set);  //清空信号集
-    if (sigprocmask(SIG_SETMASK, &set, NULL) == -1)  //原来是屏蔽那10个信号【防止fork()期间收到信号导致混乱】，现在不再屏蔽任何信号【接收任何信号】
-    {
-        ngx_log_error_core(NGX_LOG_ALERT,errno,"ngx_worker_process_init()中sigprocmask()失败!");
-    }
-
-    //线程池代码，率先创建，至少要比和socket相关的内容优先
     CConfig *p_config = CConfig::GetInstance();
-    int tmpthreadnums = p_config->GetIntDefault("ProcMsgRecvWorkThreadCount",5); //处理接收到的消息的线程池中线程数量
-    if(g_threadpool.Create(tmpthreadnums) == false)  //创建线程池中线程
-    {
-        //内存没释放，但是简单粗暴退出；
-        exit(-2);
-    }
-    sleep(1); //再休息1秒；
+    // Keep inherited signal mask while creating threads. Only the event thread unblocks.
 
-    if(g_socket.Initialize_subproc() == false) //初始化子进程需要具备的一些多线程能力相关的信息
+    // Redis 连接池必须由各 Worker 独立创建，且先于使用它的线程启动。
+    if(g_socket.InitializeRedis() == false)
     {
-        //内存没释放，但是简单粗暴退出；
-        exit(-2);
+        _exit(2); // initialization failure: OS reclaims partial resources
     }
 
     // MySQL 连接池：必须在 fork 之后的 Worker 内初始化，禁止在 master 进程 Init
@@ -212,12 +224,31 @@ static void ngx_worker_process_init(int inum)
                                                 mysql_db,
                                                 pool_size) == false) {
             ngx_log_stderr(0, "ngx_worker_process_init() MySQL 连接池 Init 失败");
-            exit(-2);
+            _exit(2); // initialization failure: OS reclaims partial resources
         }
     }
     
+    // Backends are ready; create business threads before network helper threads.
+    int tmpthreadnums = p_config->GetIntDefault("ProcMsgRecvWorkThreadCount",5); //处理接收到的消息的线程池中线程数量
+    if(g_threadpool.Create(tmpthreadnums) == false)  //创建线程池中线程
+    {
+        //内存没释放，但是简单粗暴退出；
+        _exit(2); // initialization failure: OS reclaims partial resources
+    }
+    sleep(1); //再休息1秒；
+
+    if(g_socket.Initialize_subproc() == false) //初始化子进程需要具备的一些多线程能力相关的信息
+    {
+        //内存没释放，但是简单粗暴退出；
+        _exit(2); // initialization failure: OS reclaims partial resources
+    }
+
     //如下这些代码参照官方nginx里的ngx_event_process_init()函数中的代码
     g_socket.ngx_epoll_init();           //初始化epoll相关内容，同时 往监听socket上增加监听事件，从而开始让监听端口履行其职责
+    sigset_t set;
+    sigemptyset(&set);
+    if (pthread_sigmask(SIG_SETMASK, &set, nullptr) != 0)
+        _exit(2);
     //g_socket.ngx_epoll_listenportstart();//往监听socket上增加监听事件，从而开始让监听端口履行其职责【如果不加这行，虽然端口能连上，但不会触发ngx_epoll_process_events()里边的epoll_wait()往下走】
     
     

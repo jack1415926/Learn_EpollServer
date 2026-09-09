@@ -1,6 +1,7 @@
 ﻿
 
 #include <stdio.h>
+#include <chrono>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>    //uintptr_t
@@ -173,11 +174,22 @@ void CSocekt::Shutdown_subproc()
 		if(*iter)
 			delete *iter;
 	}
-	m_threadVector.clear();
+    m_threadVector.clear();
 
     //(3)队列相关
+    ngx_close_listening_sockets();
+    for (auto conn : m_connectionList)
+    {
+        if (conn->fd != -1) close(conn->fd);
+        conn->fd = -1;
+        conn->PutOneToFree();
+    }
+    if (m_epollhandle != -1) close(m_epollhandle);
+    m_epollhandle = -1;
     clearMsgSendQueue();
     clearconnection();
+    m_recyconnectionList.clear();
+    m_totol_recyconnection_n = 0;
     clearAllFromTimerQueue();
     
     //(4)多线程相关    
@@ -325,18 +337,52 @@ bool CSocekt::setnonblocking(int sockfd)
 //关闭socket，什么时候用，我们现在先不确定，先把这个函数预备在这里
 void CSocekt::ngx_close_listening_sockets()
 {
-    for(int i = 0; i < m_ListenPortCount; i++) //要关闭这么多个监听端口
-    {  
-        //ngx_log_stderr(0,"端口是%d,socketid是%d.",m_ListenSocketList[i]->port,m_ListenSocketList[i]->fd);
-        close(m_ListenSocketList[i]->fd);
-        ngx_log_error_core(NGX_LOG_INFO,0,"关闭监听端口%d!",m_ListenSocketList[i]->port); //显示一些信息到日志中
-    }//end for(int i = 0; i < m_ListenPortCount; i++)
-    return;
+    for (auto listener : m_ListenSocketList)
+    {
+        if (listener->fd == -1) continue;
+        // DEL is necessary: other processes still hold the shared listening socket.
+        if (m_epollhandle != -1)
+            epoll_ctl(m_epollhandle, EPOLL_CTL_DEL, listener->fd, nullptr);
+        close(listener->fd);
+        listener->fd = -1;
+        if (listener->connection) listener->connection->fd = -1;
+    }
 }
 
-//将一个待发送消息入到发消息队列中
+void CSocekt::CloseListeningSockets()
+{
+    ngx_close_listening_sockets();
+}
+
+void CSocekt::StopReceiving()
+{
+    std::lock_guard<std::recursive_mutex> lock(m_ioMutex);
+    m_draining = true;
+    ngx_close_listening_sockets();
+    for (auto conn : m_connectionList)
+        if (conn->fd != -1)
+            ngx_epoll_oper_event(conn->fd, EPOLL_CTL_MOD, EPOLLIN | EPOLLRDHUP, 1, conn);
+}
+
+bool CSocekt::DrainSendQueue(int timeoutMs)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    do {
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_ioMutex);
+            bool pending = m_iSendMsgQueueCount != 0;
+            for (auto conn : m_connectionList)
+                pending = pending || (conn->fd != -1 && conn->iThrowsendCount > 0);
+            if (!pending) return true;
+        }
+        ngx_epoll_process_events(20); // write-only dispatch while m_draining
+    } while (std::chrono::steady_clock::now() < deadline);
+    return false;
+}
+
 void CSocekt::msgSend(char *psendbuf) 
 {
+    std::lock_guard<std::recursive_mutex> ioLock(m_ioMutex);
     CMemory *p_memory = CMemory::GetInstance();
 
     CLock lock(&m_sendMessageQueueMutex);  //互斥量
@@ -354,6 +400,11 @@ void CSocekt::msgSend(char *psendbuf)
     //总体数据并无风险，不会导致服务器崩溃，要看看个体数据，找一下恶意者了    
     LPSTRUC_MSG_HEADER pMsgHeader = (LPSTRUC_MSG_HEADER)psendbuf;
 	lpngx_connection_t p_Conn = pMsgHeader->pConn;
+    if (p_Conn->fd == -1 || p_Conn->iCurrsequence != pMsgHeader->iCurrsequence)
+    {
+        p_memory->FreeMemory(psendbuf);
+        return;
+    }
     if(p_Conn->iSendCount > 400)
     {
         //该用户收消息太慢【或者干脆不收消息】，累积的该用户的发送队列中有的数据条目数过大，认为是恶意用户，直接切断
@@ -380,6 +431,8 @@ void CSocekt::msgSend(char *psendbuf)
 //这个函数是可能被多线程调用的，但是即便被多线程调用，也没关系，不影响本服务器程序的稳定性和正确运行性
 void CSocekt::zdClosesocketProc(lpngx_connection_t p_Conn)
 {
+    std::lock_guard<std::recursive_mutex> ioLock(m_ioMutex);
+    if (p_Conn->fd == -1) return;
     if(m_ifkickTimeCount == 1)
     {
         DeleteFromTimerQueue(p_Conn); //从时间队列中把连接干掉
@@ -390,8 +443,7 @@ void CSocekt::zdClosesocketProc(lpngx_connection_t p_Conn)
         p_Conn->fd = -1;
     }
 
-    if(p_Conn->iThrowsendCount > 0)  
-        --p_Conn->iThrowsendCount;   //归0
+    p_Conn->iThrowsendCount = 0;
 
     inRecyConnectQueue(p_Conn);
     return;
@@ -432,6 +484,7 @@ bool CSocekt::TestFlood(lpngx_connection_t pConn)
 //打印统计信息
 void CSocekt::printTDInfo()
 {
+    std::lock_guard<std::recursive_mutex> ioLock(m_ioMutex);
     //return;
     time_t currtime = time(NULL);
     if( (currtime - m_lastprintTime) > 10)
@@ -445,7 +498,10 @@ void CSocekt::printTDInfo()
         ngx_log_stderr(0,"------------------------------------begin--------------------------------------");
         ngx_log_stderr(0,"当前在线人数/总人数(%d/%d)。",tmpoLUC,m_worker_connections);        
         ngx_log_stderr(0,"连接池中空闲连接/总连接/要释放的连接(%d/%d/%d)。",m_freeconnectionList.size(),m_connectionList.size(),m_recyconnectionList.size());
-        ngx_log_stderr(0,"当前时间队列大小(%d)。",m_timerQueuemap.size());        
+        {
+            CLock timerLock(&m_timequeueMutex);
+            ngx_log_stderr(0,"当前时间队列大小(%d)。",static_cast<int>(m_timerQueuemap.size()));
+        }
         ngx_log_stderr(0,"当前收消息队列/发消息队列大小分别为(%d/%d)，丢弃的待发送数据包数量为%d。",tmprmqc,tmpsmqc,m_iDiscardSendPkgCount);        
         if( tmprmqc > 100000)
         {
@@ -467,7 +523,7 @@ int CSocekt::ngx_epoll_init()
     if (m_epollhandle == -1) 
     {
         ngx_log_stderr(errno,"CSocekt::ngx_epoll_init()中epoll_create()失败.");
-        exit(2); //这是致命问题了，直接退，资源由系统释放吧，这里不刻意释放了，比较麻烦
+        _exit(2); //这是致命问题了，直接退，资源由系统释放吧，这里不刻意释放了，比较麻烦
     }
 
     //(2)创建连接池【数组】、创建出来，这个东西后续用于处理所有客户端的连接
@@ -483,7 +539,7 @@ int CSocekt::ngx_epoll_init()
         {
             //这是致命问题，刚开始怎么可能连接池就为空呢？
             ngx_log_stderr(errno,"CSocekt::ngx_epoll_init()中ngx_get_connection()失败.");
-            exit(2); //这是致命问题了，直接退，资源由系统释放吧，这里不刻意释放了，比较麻烦
+            _exit(2); //这是致命问题了，直接退，资源由系统释放吧，这里不刻意释放了，比较麻烦
         }
         p_Conn->listening = (*pos);   //连接对象 和监听对象关联，方便通过连接对象找监听对象
         (*pos)->connection = p_Conn;  //监听对象 和连接对象关联，方便通过监听对象找连接对象
@@ -502,7 +558,7 @@ int CSocekt::ngx_epoll_init()
                                 p_Conn              //连接池中的连接 
                                 ) == -1) 
         {
-            exit(2); //有问题，直接退出，日志 已经写过了
+            _exit(2); //有问题，直接退出，日志 已经写过了
         }
     } //end for 
     return 1;
@@ -614,43 +670,27 @@ int CSocekt::ngx_epoll_process_events(int timer)
         return 0; //非正常返回 
     }
 
-    //会惊群，一个telnet上来，4个worker进程都会被惊动，都执行下边这个
-    //ngx_log_stderr(0,"惊群测试:events=%d,进程id=%d",events,ngx_pid); 
-    //ngx_log_stderr(0,"----------------------------------------"); 
-
-    //走到这里，就是属于有事件收到了
-    lpngx_connection_t p_Conn;
-    //uintptr_t          instance;
-    uint32_t           revents;
-    for(int i = 0; i < events; ++i)    //遍历本次epoll_wait返回的所有事件，注意events才是返回的实际事件数量
+    std::lock_guard<std::recursive_mutex> ioLock(m_ioMutex);
+    uint64_t sequences[NGX_MAX_EVENTS];
+    for (int i = 0; i < events; ++i)
+        sequences[i] = static_cast<lpngx_connection_t>(m_events[i].data.ptr)->iCurrsequence;
+    for (int i = 0; i < events; ++i)
     {
-        p_Conn = (lpngx_connection_t)(m_events[i].data.ptr);           //ngx_epoll_add_event()给进去的，这里能取出来
-
-
-        //能走到这里，我们认为这些事件都没过期，就正常开始处理
-        revents = m_events[i].events;//取出事件类型
-        
-      
-
-        if(revents & EPOLLIN)  //如果是读事件
-        {
-           
-            (this->* (p_Conn->rhandler) )(p_Conn);    //注意括号的运用来正确设置优先级，防止编译出错；【如果是个新客户连入
-        }
-        
-        if(revents & EPOLLOUT) //如果是写事件【对方关闭连接也触发这个，再研究。。。。。。】，注意上边的 if(revents & (EPOLLERR|EPOLLHUP))  revents |= EPOLLIN|EPOLLOUT; 读写标记都给加上了
-        {
-            //ngx_log_stderr(errno,"22222222222222222222.");
-            if(revents & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) //客户端关闭，如果服务器端挂着一个写通知事件，则这里个条件是可能成立的
-            {
-                --p_Conn->iThrowsendCount;                 
-            }
-            else
-            {
-                (this->* (p_Conn->whandler) )(p_Conn);   //如果有数据没有发送完毕，由系统驱动来发送，则这里执行的应该是 CSocekt::ngx_write_request_handler()
-            }            
-        }
-    } //end for(int i = 0; i < events; ++i)     
+        auto conn = static_cast<lpngx_connection_t>(m_events[i].data.ptr);
+        if (conn->fd == -1 || conn->iCurrsequence != sequences[i])
+            continue; // a prior event in this batch closed/reused this object
+        const uint32_t flags = m_events[i].events;
+        if (!m_draining && !ngx_shutdown && (flags & EPOLLIN))
+            (this->*(conn->rhandler))(conn);
+        if (conn->fd == -1 || conn->iCurrsequence != sequences[i])
+            continue;
+        if (flags & (EPOLLERR | EPOLLHUP))
+            zdClosesocketProc(conn);
+        else if ((flags & EPOLLOUT) && conn->iThrowsendCount > 0)
+            (this->*(conn->whandler))(conn);
+        else if (!m_draining && (flags & EPOLLRDHUP) && !(flags & EPOLLIN))
+            zdClosesocketProc(conn);
+    }
     return 1;
 }
 
@@ -688,6 +728,7 @@ void* CSocekt::ServerSendQueueThread(void* threadData)
         if(g_stopEvent != 0)  //要求整个进程退出
             break;
 
+        std::lock_guard<std::recursive_mutex> ioLock(pSocketObj->m_ioMutex);
         if(pSocketObj->m_iSendMsgQueueCount > 0) //原子的 
         {
             err = pthread_mutex_lock(&pSocketObj->m_sendMessageQueueMutex); //因为我们要操作发送消息对列m_MsgSendQueue，所以这里要临界            
@@ -704,7 +745,7 @@ void* CSocekt::ServerSendQueueThread(void* threadData)
                 p_Conn = pMsgHeader->pConn;
 
               
-                if(p_Conn->iCurrsequence != pMsgHeader->iCurrsequence) 
+                if(p_Conn->fd == -1 || p_Conn->iCurrsequence != pMsgHeader->iCurrsequence)
                 {
                     //本包中保存的序列号与p_Conn【连接池中连接】中实际的序列号已经不同，丢弃此消息，小心处理该消息的删除
                     pos2=pos;
@@ -778,7 +819,8 @@ void* CSocekt::ServerSendQueueThread(void* threadData)
 
                     p_memory->FreeMemory(p_Conn->psendMemPointer);  //释放内存
                     p_Conn->psendMemPointer = NULL;
-                    p_Conn->iThrowsendCount = 0;  //这行其实可以没有，因此此时此刻这东西就是=0的    
+                    p_Conn->iThrowsendCount = 0;
+                    pSocketObj->zdClosesocketProc(p_Conn);
                     continue;
                 }
 
@@ -807,7 +849,8 @@ void* CSocekt::ServerSendQueueThread(void* threadData)
                     //能走到这里的，应该就是返回值-2了，一般就认为对端断开了，等待recv()来做断开socket以及回收资源
                     p_memory->FreeMemory(p_Conn->psendMemPointer);  //释放内存
                     p_Conn->psendMemPointer = NULL;
-                    p_Conn->iThrowsendCount = 0;  //这行其实可以没有，因此此时此刻这东西就是=0的  
+                    p_Conn->iThrowsendCount = 0;
+                    pSocketObj->zdClosesocketProc(p_Conn);
                     continue;
                 }
 

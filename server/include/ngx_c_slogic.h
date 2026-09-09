@@ -3,6 +3,7 @@
 #define __NGX_C_SLOGIC_H__
 
 #include <sw/redis++/redis++.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include "ngx_c_socket.h"
 
@@ -14,6 +15,9 @@ public:
 	virtual bool Initialize();                                              //初始化函数
 
 public:
+
+	void Shutdown_subproc() override;
+	bool InitializeRedis(); // Worker fork 后、启动线程前创建独立连接池
 
 	//通用收发数据相关函数
 	void  SendNoBodyPkgToClient(LPSTRUC_MSG_HEADER pMsgHeader,unsigned short iMsgCode);
@@ -30,6 +34,7 @@ public:
 	virtual void threadRecvProcFunc(char *pMsgBuf);
 
 private:
+	void SendGetUserInfoResponse(LPSTRUC_MSG_HEADER header, int result, int64_t userId, const char *username);
 	//新增：redis-plus-plus连接池连接池对象指针;
 	sw::redis::Redis *m_pRedis = nullptr;
 };

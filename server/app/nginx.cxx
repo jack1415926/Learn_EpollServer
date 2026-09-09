@@ -36,9 +36,10 @@ CThreadPool    g_threadpool;    //线程池全局对象
 pid_t   ngx_pid;                //当前进程的pid
 pid_t   ngx_parent;             //父进程的pid
 int     ngx_process;            //进程类型，比如master,worker进程等
-int     g_stopEvent;            //标志程序退出,0不退出1，退出
+std::atomic<int> g_stopEvent{0}; // only set after business and send draining
+volatile sig_atomic_t ngx_shutdown = 0;
 
-sig_atomic_t  ngx_reap;         //标记子进程状态变化[一般是子进程发来SIGCHLD信号表示退出],sig_atomic_t:系统定义的类型：访问或改变这些变量需要在计算机的一条指令内完成
+volatile sig_atomic_t ngx_reap;
                                    //一般等价于int【通常情况下，int类型的变量通常是原子访问的，也可以认为 sig_atomic_t就是int类型的数据】                                   
 
 //程序主入口函数----------------------------------
@@ -125,7 +126,7 @@ int main(int argc, char *const *argv)
         g_daemonized = 1;    //守护进程标记，标记是否启用了守护进程模式，0：未启用，1：启用了
     }
 
-    ngx_master_process_cycle(); //不管父进程还是子进程，正常工作期间都在这个函数里循环；
+    exitcode = ngx_master_process_cycle();
         
 lblexit:
     //(5)该释放的资源要释放掉

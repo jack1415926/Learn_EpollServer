@@ -149,51 +149,24 @@ void CSocekt::clearAllFromTimerQueue()
 //时间队列监视和处理线程，处理到期不发心跳包的用户踢出的线程
 void* CSocekt::ServerTimerQueueMonitorThread(void* threadData)
 {
-    ThreadItem *pThread = static_cast<ThreadItem*>(threadData);
-    CSocekt *pSocketObj = pThread->_pThis;
-
-    time_t absolute_time,cur_time;
-    int err;
-
-    while(g_stopEvent == 0) //不退出
+    auto socket = static_cast<ThreadItem*>(threadData)->_pThis;
+    while (g_stopEvent == 0)
     {
-        //这里没互斥判断，所以只是个初级判断，目的至少是队列为空时避免系统损耗		
-		if(pSocketObj->m_cur_size_ > 0)//队列不为空，有内容
+        const time_t now = time(nullptr);
+        std::list<LPSTRUC_MSG_HEADER> expired;
         {
-			//时间队列中最近发生事情的时间放到 absolute_time里；
-            absolute_time = pSocketObj->m_timer_value_; //这个可是省了个互斥，十分划算
-            cur_time = time(NULL);
-            if(absolute_time < cur_time)
-            {
-                //时间到了，可以处理了
-                std::list<LPSTRUC_MSG_HEADER> m_lsIdleList; //保存要处理的内容
-                LPSTRUC_MSG_HEADER result;
-
-                err = pthread_mutex_lock(&pSocketObj->m_timequeueMutex);  
-                if(err != 0) ngx_log_stderr(err,"CSocekt::ServerTimerQueueMonitorThread()中pthread_mutex_lock()失败，返回的错误码为%d!",err);//有问题，要及时报告
-                while ((result = pSocketObj->GetOverTimeTimer(cur_time)) != NULL) //一次性的把所有超时节点都拿过来
-				{
-					m_lsIdleList.push_back(result); 
-				}//end while
-                err = pthread_mutex_unlock(&pSocketObj->m_timequeueMutex); 
-                if(err != 0)  ngx_log_stderr(err,"CSocekt::ServerTimerQueueMonitorThread()pthread_mutex_unlock()失败，返回的错误码为%d!",err);//有问题，要及时报告                
-                LPSTRUC_MSG_HEADER tmpmsg;
-                while(!m_lsIdleList.empty())
-                {
-                    tmpmsg = m_lsIdleList.front();
-					m_lsIdleList.pop_front(); 
-                    pSocketObj->procPingTimeOutChecking(tmpmsg,cur_time); //这里需要检查心跳超时问题
-                } //end while(!m_lsIdleList.empty())
-            }
-        } //end if(pSocketObj->m_cur_size_ > 0)
-        
-        usleep(500 * 1000); //为简化问题，我们直接每次休息500毫秒
-    } //end while
-
-    return (void*)0;
+            CLock lock(&socket->m_timequeueMutex);
+            LPSTRUC_MSG_HEADER message;
+            while ((message = socket->GetOverTimeTimer(now)) != nullptr)
+                expired.push_back(message);
+        }
+        for (auto message : expired)
+            socket->procPingTimeOutChecking(message, now);
+        usleep(500 * 1000);
+    }
+    return nullptr;
 }
 
-//心跳包检测时间到，该去检测心跳包是否超时的事宜，本函数只是把内存释放，子类应该重新事先该函数以实现具体的判断动作
 void CSocekt::procPingTimeOutChecking(LPSTRUC_MSG_HEADER tmpmsg,time_t cur_time)
 {
 	CMemory *p_memory = CMemory::GetInstance();

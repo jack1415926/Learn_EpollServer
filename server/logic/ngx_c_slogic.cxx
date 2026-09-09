@@ -15,6 +15,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>   //多线程
 #include <memory>
+#include <chrono>
 
 #include "ngx_c_conf.h"
 #include "ngx_macro.h"
@@ -77,8 +78,7 @@ static int64_t ngx_hton64(int64_t n)
     return ngx_ntoh64(n);
 }
 
-static void SendGetUserInfoResponse(CLogicSocket *self,
-                                    LPSTRUC_MSG_HEADER pMsgHeader,
+void CLogicSocket::SendGetUserInfoResponse(LPSTRUC_MSG_HEADER pMsgHeader,
                                     int iResult,
                                     int64_t userId,
                                     const char *username)
@@ -87,16 +87,16 @@ static void SendGetUserInfoResponse(CLogicSocket *self,
     CCRC32 *p_crc32 = CCRC32::GetInstance();
     const int iSendLen = sizeof(STRUCT_GET_USER_INFO_RESP);
 
-    char *p_sendbuf = (char *)p_memory->AllocMemory(self->m_iLenMsgHeader + self->m_iLenPkgHeader + iSendLen, false);
-    memcpy(p_sendbuf, pMsgHeader, self->m_iLenMsgHeader);
+    char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iSendLen, false);
+    memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader);
 
-    LPCOMM_PKG_HEADER pPkgHeader = (LPCOMM_PKG_HEADER)(p_sendbuf + self->m_iLenMsgHeader);
+    LPCOMM_PKG_HEADER pPkgHeader = (LPCOMM_PKG_HEADER)(p_sendbuf + m_iLenMsgHeader);
     pPkgHeader->msgCode = _CMD_GET_USER_INFO;
     pPkgHeader->msgCode = htons(pPkgHeader->msgCode);
-    pPkgHeader->pkgLen = htons(self->m_iLenPkgHeader + iSendLen);
+    pPkgHeader->pkgLen = htons(m_iLenPkgHeader + iSendLen);
 
     LPSTRUCT_GET_USER_INFO_RESP p_sendInfo =
-        (LPSTRUCT_GET_USER_INFO_RESP)(p_sendbuf + self->m_iLenMsgHeader + self->m_iLenPkgHeader);
+        (LPSTRUCT_GET_USER_INFO_RESP)(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader);
     memset(p_sendInfo, 0, iSendLen);
     p_sendInfo->iResult = htonl(iResult);
     p_sendInfo->userId = ngx_hton64(userId);
@@ -106,7 +106,7 @@ static void SendGetUserInfoResponse(CLogicSocket *self,
 
     pPkgHeader->crc32 = p_crc32->Get_CRC((unsigned char *)p_sendInfo, iSendLen);
     pPkgHeader->crc32 = htonl(pPkgHeader->crc32);
-    self->msgSend(p_sendbuf);
+    msgSend(p_sendbuf);
 }
 #define AUTH_TOTAL_COMMANDS sizeof(statusHandler)/sizeof(handler) //整个命令有多少个，编译时即可知道
 
@@ -128,27 +128,39 @@ CLogicSocket::~CLogicSocket()
 //成功返回true，失败返回false
 bool CLogicSocket::Initialize()
 {
-    //做一些和本类相关的初始化工作
-    //....日后根据需要扩展        
-    bool bParentInit = CSocekt::Initialize();  //调用父类的同名函数
+    return CSocekt::Initialize();  // Master 只初始化监听资源
+}
 
-    //新增初始化Redis连接池
+//仅在 fork 后的 Worker 中、启动线程前调用，避免继承 Redis 连接池。
+bool CLogicSocket::InitializeRedis()
+{
     try{
         sw::redis::ConnectionOptions conn_opts;
         conn_opts.host = "127.0.0.1";
         conn_opts.port = 6379;
+        conn_opts.connect_timeout = std::chrono::milliseconds(5000);
+        conn_opts.socket_timeout = std::chrono::milliseconds(5000);
         //conn_opts.password = "yourpassword"; // 如果Redis设置了密码，取消注释并设置密码
 
         sw::redis::ConnectionPoolOptions pool_opts;
+        pool_opts.wait_timeout = std::chrono::milliseconds(5000);
         pool_opts.size = 10; // 连接池大小，根据需要调整
 
         m_pRedis = new sw::redis::Redis(conn_opts, pool_opts);
     }catch (const sw::redis::Error &e) {
-        ngx_log_stderr(0,"CLogicSocket::Initialize()中连接Redis失败: %s", e.what());
+        ngx_log_stderr(0,"CLogicSocket::InitializeRedis()中创建Redis连接池失败: %s", e.what());
         return false;
     }
 
-    return bParentInit;
+    ngx_log_error_core(NGX_LOG_NOTICE,0,"Worker %P Redis连接池创建成功",ngx_pid);
+    return true;
+}
+
+void CLogicSocket::Shutdown_subproc()
+{
+    CSocekt::Shutdown_subproc(); // all users of Redis have joined
+    delete m_pRedis;
+    m_pRedis = nullptr;
 }
 
 //业务线程分发入口处理
@@ -190,18 +202,25 @@ void CLogicSocket::threadRecvProcFunc(char *pMsgBuf)
     unsigned short imsgCode = ntohs(pPkgHeader->msgCode); //消息代码拿出来
     lpngx_connection_t p_Conn = pMsgHeader->pConn;        //消息头中藏着连接池中连接的指针
 
-    //序列号检验：放置处理因为网络延迟导致的，已经断开又被复用的废弃连接的包 
-    if(p_Conn->iCurrsequence != pMsgHeader->iCurrsequence)   
+    struct sockaddr peer;
     {
-        return; //丢弃不理这种包了【客户端断开了】
+        std::lock_guard<std::recursive_mutex> lock(m_ioMutex);
+        if (p_Conn->fd == -1 || p_Conn->iCurrsequence != pMsgHeader->iCurrsequence)
+            return;
+        ++p_Conn->activeJobs;
+        peer = p_Conn->s_sockaddr;
     }
+    struct JobGuard {
+        lpngx_connection_t conn;
+        ~JobGuard() { --conn->activeJobs; }
+    } job{p_Conn}; // recycle cannot reuse this object until business code returns
 
     //第二步：新增L2拦截层，利用Redis lua脚本进行全局限流
     //只有合法的包，才值得Redis去查一下是不是他在恶意攻击
 
     if(m_pRedis !=nullptr){
     u_char ip_text[100]={0};
-    ngx_sock_ntop(&p_Conn->s_sockaddr, 0, ip_text, sizeof(ip_text));
+    ngx_sock_ntop(&peer, 0, ip_text, sizeof(ip_text));
     std::string client_ip((const char*)ip_text);
     try
     {
@@ -259,6 +278,11 @@ void CLogicSocket::threadRecvProcFunc(char *pMsgBuf)
 //心跳包检测时间到，该去检测心跳包是否超时的事宜，本函数是子类函数，实现具体的判断动作
 void CLogicSocket::procPingTimeOutChecking(LPSTRUC_MSG_HEADER tmpmsg,time_t cur_time)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_ioMutex);
+    if (m_draining) {
+        CMemory::GetInstance()->FreeMemory(tmpmsg);
+        return;
+    }
     CMemory *p_memory = CMemory::GetInstance();
 
     if(tmpmsg->iCurrsequence == tmpmsg->pConn->iCurrsequence) //此连接没断
@@ -432,7 +456,7 @@ bool CLogicSocket::_HandleGetUserInfo(lpngx_connection_t pConn, LPSTRUC_MSG_HEAD
     LPSTRUCT_GET_USER_INFO_REQ p_recv = (LPSTRUCT_GET_USER_INFO_REQ)pPkgBody;
     int64_t userId = ngx_ntoh64(p_recv->userId);
     if (userId <= 0) {
-        SendGetUserInfoResponse(this, pMsgHeader, NGX_USER_ERR_BADREQ, 0, nullptr);
+        SendGetUserInfoResponse(pMsgHeader, NGX_USER_ERR_BADREQ, 0, nullptr);
         return false;
     }
 
@@ -440,18 +464,18 @@ bool CLogicSocket::_HandleGetUserInfo(lpngx_connection_t pConn, LPSTRUC_MSG_HEAD
     bool isNullCached = false;
     if (m_pRedis != nullptr &&
         CUserCacheService::TryGetFromCache(m_pRedis, userId, cached, &isNullCached)) {
-        SendGetUserInfoResponse(this, pMsgHeader, NGX_USER_OK, cached.id, cached.username);
+        SendGetUserInfoResponse(pMsgHeader, NGX_USER_OK, cached.id, cached.username);
         return true;
     }
     if (isNullCached) {
-        SendGetUserInfoResponse(this, pMsgHeader, NGX_USER_NOT_FOUND, userId, nullptr);
+        SendGetUserInfoResponse(pMsgHeader, NGX_USER_NOT_FOUND, userId, nullptr);
         return false;
     }
 
     std::shared_ptr<MYSQL> mysql_conn = CMysqlConnPool::GetInstance()->GetConnection();
     if (!mysql_conn) {
         ngx_log_stderr(0, "_HandleGetUserInfo: 获取 MySQL 连接失败");
-        SendGetUserInfoResponse(this, pMsgHeader, NGX_USER_ERR_BACKEND, userId, nullptr);
+        SendGetUserInfoResponse(pMsgHeader, NGX_USER_ERR_BACKEND, userId, nullptr);
         return false;
     }
 
@@ -461,14 +485,14 @@ bool CLogicSocket::_HandleGetUserInfo(lpngx_connection_t pConn, LPSTRUC_MSG_HEAD
         if (m_pRedis != nullptr) {
             CUserCacheService::SetUserCache(m_pRedis, userId, dbUser, 0);
         }
-        SendGetUserInfoResponse(this, pMsgHeader, NGX_USER_OK, dbUser.id, dbUser.username);
+        SendGetUserInfoResponse(pMsgHeader, NGX_USER_OK, dbUser.id, dbUser.username);
         return true;
     }
 
     if (m_pRedis != nullptr) {
         CUserCacheService::SetNullUserCache(m_pRedis, userId, 0);
     }
-    SendGetUserInfoResponse(this, pMsgHeader, NGX_USER_NOT_FOUND, userId, nullptr);
+    SendGetUserInfoResponse(pMsgHeader, NGX_USER_NOT_FOUND, userId, nullptr);
     return false;
 }
 

@@ -3,6 +3,8 @@
 #define __NGX_THREADPOOL_H__
 
 #include <vector>
+#include <list>
+#include <ctime>
 #include <pthread.h>
 #include <atomic>   //c++11里的原子操作
 
@@ -35,7 +37,7 @@ private:
     {
         pthread_t   _Handle;                        //线程句柄
         CThreadPool *_pThis;                        //记录线程池的指针	
-        bool        ifrunning;                      //标记是否正式启动起来，启动起来后，才允许调用StopAll()来释放
+        std::atomic<bool> ifrunning;
 
         //构造函数
         ThreadItem(CThreadPool *pthis):_pThis(pthis),ifrunning(false){}                             
@@ -60,7 +62,7 @@ private:
 
     //接收消息队列相关
     std::list<char *>          m_MsgRecvQueue;      //接收数据消息队列 
-	int                        m_iRecvMsgQueueCount;//收消息队列大小
+	std::atomic<int>           m_iRecvMsgQueueCount;
 };
 
 #endif

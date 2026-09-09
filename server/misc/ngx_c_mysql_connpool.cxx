@@ -92,6 +92,8 @@ MYSQL *CMysqlConnPool::CreateConnection()
     // 连接超时 5 秒，便于启动时快速失败
     unsigned int timeout_sec = 5;
     mysql_options(conn, MYSQL_OPT_CONNECT_TIMEOUT, &timeout_sec);
+    mysql_options(conn, MYSQL_OPT_READ_TIMEOUT, &timeout_sec);
+    mysql_options(conn, MYSQL_OPT_WRITE_TIMEOUT, &timeout_sec);
 
     if (mysql_real_connect(conn,
                            m_host.c_str(),
