@@ -74,9 +74,9 @@ MCP 客户端应以 stdio 方式启动上述模块；从仓库外启动时，可
 * \[ \] **v0.4**: 修复资源生命周期和协议测试，补齐优雅退出与可复现压测。
 * \[ \] **v0.5**: 已增加只读 stdio MCP MVP；完整运维诊断 Agent 与 KBrag V6 工具级演示仍待实现。
 
-**当前进度（2026-09-14）**：v0.4 进行中。Redis fork 后初始化、协议测试修复、优雅退出与并发关闭保护已完成代码修改；离线协议回归通过，Linux 编译和运行验收由用户在 Ubuntu VM 中进行，目前尚无验收结果。密码存储与响应信息收紧、可复现压测尚未开始。只读 stdio MCP MVP 已加入项目；4 项 MCP 测试与原有 3 项协议回归通过，外部 MCP Client 已成功发现并调用工具，但尚未连接真实 C++ 服务验证 Ping。完整诊断 Agent 仍为计划。
+**当前进度（2026-09-14）**：v0.4 进行中。提交 `dbdf8a6` 已在 Ubuntu 24.04.5 VM（G++ 13.3）完成 Debug 干净编译；当前16项Python离线回归、线程池排空及4个停机场景通过。注册、登录、用户查询、Redis缓存和多Worker独立Redis连接已完成实机联调。压测端现支持多进程、延迟抽样、预分配Ping完整校验和整机资源采样；单进程约减半已定位为Python用户态超时socket开销，改用Linux内核收发超时后，严格单进程从约0.9W恢复到约1.61W。12核相同4/8核分配下，6/8进程长期中位数约为5.31W/4.94W。Release、外部压测、密码安全、慢读及sanitizer专项尚未完成，不能据此宣称生产可用或已测得服务器上限。完整诊断Agent仍为计划。
 
-停机测试步骤见 [Ubuntu 验收说明](docs/SHUTDOWN_VALIDATION.md)。本轮不将代码修改视为生产可用或性能已验证。
+新会话先阅读 [当前状态与下一步](docs/CURRENT_STATUS_AND_NEXT_STEPS.md)。停机测试步骤见 [Ubuntu 验收说明](docs/SHUTDOWN_VALIDATION.md)，压测方法与当前边界见 [性能验证说明](docs/PERFORMANCE_VALIDATION.md)。本轮不将代码修改视为生产可用或性能已验证。
 
 详细优先级、验收标准与 Agent 集成设计见 [`docs/OPTIMIZATION_AND_AGENT_ROADMAP.md`](docs/OPTIMIZATION_AND_AGENT_ROADMAP.md)。
 

@@ -134,6 +134,15 @@ bool CLogicSocket::Initialize()
 //仅在 fork 后的 Worker 中、启动线程前调用，避免继承 Redis 连接池。
 bool CLogicSocket::InitializeRedis()
 {
+    CConfig *p_config = CConfig::GetInstance();
+    m_redisRateLimitEnabled = p_config->GetIntDefault("RedisRateLimitEnable", 1) != 0;
+    m_redisRateLimitWindowSec = p_config->GetIntDefault("RedisRateLimitWindowSec", 60);
+    m_redisRateLimitMaxRequests = p_config->GetIntDefault("RedisRateLimitMaxRequests", 20);
+    if (m_redisRateLimitWindowSec <= 0)
+        m_redisRateLimitWindowSec = 60;
+    if (m_redisRateLimitMaxRequests <= 0)
+        m_redisRateLimitMaxRequests = 20;
+
     try{
         sw::redis::ConnectionOptions conn_opts;
         conn_opts.host = "127.0.0.1";
@@ -152,7 +161,10 @@ bool CLogicSocket::InitializeRedis()
         return false;
     }
 
-    ngx_log_error_core(NGX_LOG_NOTICE,0,"Worker %P Redis连接池创建成功",ngx_pid);
+    ngx_log_error_core(NGX_LOG_NOTICE,0,
+        "Worker %P Redis连接池创建成功，限流=%s，窗口=%d秒，阈值=%d",
+        ngx_pid, m_redisRateLimitEnabled ? "on" : "off",
+        m_redisRateLimitWindowSec, m_redisRateLimitMaxRequests);
     return true;
 }
 
@@ -218,7 +230,7 @@ void CLogicSocket::threadRecvProcFunc(char *pMsgBuf)
     //第二步：新增L2拦截层，利用Redis lua脚本进行全局限流
     //只有合法的包，才值得Redis去查一下是不是他在恶意攻击
 
-    if(m_pRedis !=nullptr){
+    if(m_pRedis !=nullptr && m_redisRateLimitEnabled){
     u_char ip_text[100]={0};
     ngx_sock_ntop(&peer, 0, ip_text, sizeof(ip_text));
     std::string client_ip((const char*)ip_text);
@@ -229,7 +241,7 @@ void CLogicSocket::threadRecvProcFunc(char *pMsgBuf)
         std::string lua_script = R"(
           local current = redis.call('INCR',KEYS[1])
             if current == 1 then
-                redis.call('EXPIRE',KEYS[1],60)
+                redis.call('EXPIRE',KEYS[1],tonumber(ARGV[1]))
             end
             return current
     )";
@@ -239,15 +251,15 @@ void CLogicSocket::threadRecvProcFunc(char *pMsgBuf)
     long long current_count = m_pRedis->eval<long long>(
         lua_script,
         {redis_key},//KEYS数组
-        {"60"}//ARGV数组
+        {std::to_string(m_redisRateLimitWindowSec)}//ARGV数组
     );
-    //核心判断：同一IP在60秒内发包超过20次，就认为是恶意攻击。
+    //核心判断：同一IP在配置窗口内发包超过阈值，就认为是恶意攻击。
     //在测试QPS时放开限制，正式环境根据实际情况调整这个阈值
-    if(current_count > 20){
-        ngx_log_stderr(0,"[防CC攻击]L2RsedisLua限流触发，IP: %s, 60秒内请求数: %lld", client_ip.c_str(), current_count);
-        //联动L1防线：跨层封杀，把这个IP加入本地黑名单，封禁60秒。
-        //接下来该IP在60秒内发的所有包，连解析都不会走到这里，会在epoll_wait刚拿到数据就被掐断。
-        AddIpToBlacklist(client_ip, 60); //把这个IP加入本地黑名单，封禁60秒
+    if(current_count > m_redisRateLimitMaxRequests){
+        ngx_log_stderr(0,"[防CC攻击]L2 Redis Lua限流触发，IP: %s, 窗口内请求数: %L",
+                       client_ip.c_str(), (int64_t)current_count);
+        //联动L1防线：跨层封杀，封禁时长与限流窗口一致。
+        AddIpToBlacklist(client_ip, m_redisRateLimitWindowSec);
         return; //丢弃这个包，不处理了
       }
     }
