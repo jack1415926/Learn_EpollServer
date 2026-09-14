@@ -37,5 +37,8 @@ private:
 	void SendGetUserInfoResponse(LPSTRUC_MSG_HEADER header, int result, int64_t userId, const char *username);
 	//新增：redis-plus-plus连接池连接池对象指针;
 	sw::redis::Redis *m_pRedis = nullptr;
+	bool m_redisRateLimitEnabled = true;
+	int m_redisRateLimitWindowSec = 60;
+	int m_redisRateLimitMaxRequests = 20;
 };
 #endif

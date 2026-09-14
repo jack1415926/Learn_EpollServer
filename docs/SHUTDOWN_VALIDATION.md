@@ -1,6 +1,6 @@
 # 第三项：停机与并发关闭验收
 
-状态复核（2026-09-14）：代码已修改；2026-09-07 Windows 上协议回归 3 项通过，停机脚本语法、帮助入口及代码差异格式检查通过。以下 C++ 构建、线程池测试和完整停机联调尚未运行，已约定由用户在 VMware + Ubuntu 中验收，目前尚未收到运行结果。2026-09-13 完成的只读 MCP sidecar 不替代这些 Linux 验收项。统一进度见 [优化路线图](OPTIMIZATION_AND_AGENT_ROADMAP.md)。
+状态复核（2026-09-14）：代码已在 VMware Ubuntu 24.04.5 上完成实机验收。Debug 干净编译、线程池排空、SIGTERM/SIGQUIT/SIGINT 和 Worker 异常退出四个停机场景均通过；真实 MySQL/Redis 业务联调与 stdio MCP Ping 也已完成。慢读、ASan/TSan 和性能测量仍未执行。统一进度见 [优化路线图](OPTIMIZATION_AND_AGENT_ROADMAP.md)。
 
 ## 行为与边界
 
@@ -34,15 +34,15 @@ python3 testscript/test_shutdown.py --binary ./server/nginx
 
 这套联调不证明所有竞态已消除，也不确定性触发发送缓冲区满。后续仍需针对慢读客户端做发送排空测试，并在 Linux 上进行 ASan/TSan 检查和性能测量。
 
-## 验收结果记录（待用户运行后填写）
+## 验收结果记录
 
 | 检查 | 当前记录 |
 |---|---|
-| Ubuntu / 编译器 / 依赖版本 | 待记录 |
-| `make -C server` | 未运行 |
-| 线程池排空测试 | 未运行 |
-| 完整停机脚本及日志目录 | 未运行 |
-| 多 Worker Redis 与注册/查询联调 | 未运行，另见路线图命令 |
+| Ubuntu / 编译器 / 依赖版本 | Ubuntu 24.04.5 LTS；G++ 13.3；Redis 7.0.15；MySQL 8.0.46 |
+| `make -C server` | Debug 干净编译通过；`ldd` 可解析 Redis++、hiredis、MySQL client |
+| 线程池排空测试 | 10 秒限制内返回 0 |
+| 完整停机脚本及日志目录 | 初次及配置改造后均为 4/4 场景通过；最新日志 `/tmp/epoll-shutdown-zpppc16m` |
+| 多 Worker Redis 与注册/查询联调 | 通过；4 个 Worker 均观察到独立 Redis TCP 连接；Cache-Aside 键和值及 TTL 已核对 |
 | 慢读客户端、ASan/TSan、性能测量 | 未运行 |
 
 填写时保留命令、退出码、日志路径和错误摘要；不要记录真实凭据。通过协议离线回归不能替代上述验收。

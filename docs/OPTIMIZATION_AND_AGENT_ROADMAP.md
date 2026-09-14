@@ -2,6 +2,8 @@
 
 > 更新日期：2026-09-14。本文同时记录代码进度与后续计划；“代码已修改”不等于“运行验收通过”。只读 stdio MCP MVP 已实现，完整 Agent 仍为计划。
 
+新会话的工作树状态、实测证据和下一步命令见 [CURRENT_STATUS_AND_NEXT_STEPS.md](CURRENT_STATUS_AND_NEXT_STEPS.md)。
+
 ## 1. 当前定位
 
 当前项目已经具备 Linux C++17 服务端的完整学习链路：Master/Worker、epoll LT、非阻塞 Socket、线程池、自定义二进制协议、MySQL 连接池、Redis Cache-Aside、Qt 客户端和 Python 联调脚本。它适合作为 C++ 后端学习与面试项目，但尚不应描述为生产可用或经过充分性能验证的服务。
@@ -12,22 +14,22 @@
 
 | 顺序 | 工作项 | 代码进度 | 验证状态 |
 |---|---|---|---|
-| 1 | Redis 在 Worker fork 后初始化 | 已修改 | 调用顺序已核对；Linux 构建、多 Worker Redis 联调待验收 |
-| 2 | CRC、完整收包、超时与失败断言 | 已修改 | 2026-09-07 离线协议回归 3 项通过；真实业务联调待验收 |
-| 3 | 优雅退出与发送/关闭并发保护 | 已修改，已提供回归脚本 | 脚本语法、帮助入口和差异检查通过；C++、停机、慢读及 sanitizer 检查待验收 |
+| 1 | Redis 在 Worker fork 后初始化 | 已修改 | Ubuntu 实机联调通过；4 个 Worker 均观察到独立 Redis TCP 连接 |
+| 2 | CRC、完整收包、超时与失败断言 | 已修改 | Linux 离线协议回归 3 项及真实注册、登录、用户查询联调通过 |
+| 3 | 优雅退出与发送/关闭并发保护 | 已修改，已提供回归脚本 | Debug 编译、线程池排空和 4 个停机场景通过；慢读及 sanitizer 待验收 |
 | 4 | 密码存储与响应认证信息 | 未开始 | 当前仍有明文密码存储和注册响应回传密码，不能视为安全问题已解决 |
-| 5 | 可复现压测，再根据数据优化 | 未开始 | 现有压测脚本尚未完成本轮改造，无新增性能实测结论 |
+| 5 | 可复现压测，再根据数据优化 | 进行中 | 单进程减半已定位为Python用户态超时socket开销，并以Linux内核超时修复；6/8进程公平对照中位数约5.31W/4.94W，外部发压与Release待执行 |
 
-用户已有 VMware + Ubuntu，已约定由用户在 VM 中进行编译和运行测试；截至本次整理尚未收到 VM 验收结果。停机验收入口见 [SHUTDOWN_VALIDATION.md](SHUTDOWN_VALIDATION.md)，协议联调命令见下文 P0 第 2 项。
+2026-09-14 已在 VMware Ubuntu 24.04.5 VM（6 vCPU、3.8 GiB、G++ 13.3）完成上述实机验收。修改后的停机回归日志保存在 `/tmp/epoll-shutdown-zpppc16m`；这是本次 VM 的临时证据路径，不保证跨机器长期存在。停机验收详情见 [SHUTDOWN_VALIDATION.md](SHUTDOWN_VALIDATION.md)。
 
-下一项代码工作是认证边界；前三项的 VM 验收独立跟踪，不提前标记为完成。
+当前按用户要求先进入可复现压测阶段；认证边界仍是独立的未完成 P0 项，不能因调整执行顺序而降级其优先级。
 
 ## 2. 优化优先级
 
 ### P0：先保证正确性和可验证性
 
-1. **Redis 改为 fork 后初始化（代码已调整，运行验收待完成）**：`CLogicSocket::Initialize()` 只调用父类初始化监听资源；`ngx_worker_process_init()` 在启动线程前调用 `InitializeRedis()`，每个 Worker 独立创建 Redis 连接池。2026-09-07 已检查调用顺序和差异格式；本机未安装 WSL，尚未完成 Linux 构建及多 Worker 并发读写验收。连接池创建日志不代表 Redis 已连接成功，仍需实际请求验证。
-2. **修复协议测试脚本（已修改，离线回归通过，真实联调待完成）**：两个脚本共用 `testscript/protocol.py`，发送包体 CRC32，完整接收并校验响应 CRC、包长、命令码、业务结果及返回身份。连接和读写默认超时 10 秒，失败退出码为 1，断言在 `python -O` 下仍有效。注册测试每次创建一个唯一测试账号；查询脚本通过参数指定已存在/不存在的 ID。2026-09-07 离线回归通过，包含分段/连续包、CRC 标准向量、错误包长、断连，以及两个脚本的成功和七类失败退出检查；尚未连接真实 Linux/MySQL/Redis 服务。重复查询成功不代表已证实缓存命中。
+1. **Redis 改为 fork 后初始化（已通过 Linux 实机验收）**：`CLogicSocket::Initialize()` 只调用父类初始化监听资源；`ngx_worker_process_init()` 在启动线程前调用 `InitializeRedis()`，每个 Worker 独立创建 Redis 连接池。真实请求后通过 `ss -ntp` 观察到 4 个 Worker 分别持有不同的 Redis TCP 连接；这证明了本次运行中的独立建连，但不等同于长期稳定性或性能验证。
+2. **修复协议测试脚本（已通过 Linux 离线及真实联调）**：两个脚本共用 `testscript/protocol.py`，发送包体 CRC32，完整接收并校验响应 CRC、包长、命令码、业务结果及返回身份。连接和读写默认超时 10 秒，失败退出码为 1，断言在 `python -O` 下仍有效。Linux 离线协议回归 3 项通过；真实 MySQL/Redis 服务上的注册、登录及存在/不存在用户查询通过。Redis 中已直接核对正常 JSON 缓存和 `NULL_USER` 短 TTL，而不是仅凭重复响应推断缓存命中。
 
    ```bash
    # 离线协议及模拟服务回归，无需 MySQL/Redis
@@ -36,7 +38,7 @@
    python testscript/test_register_login.py --host 127.0.0.1 --port 8080 --timeout 10
    python testscript/test_get_user_info.py --host 127.0.0.1 --exist-id 1 --missing-id 99999
    ```
-3. **实现优雅退出（代码已修改，Ubuntu 运行验收待完成）**：SIGTERM/SIGQUIT/SIGINT 只设置信号标记，Master 在主循环转发停止信号并回收 Worker；Worker 停止接收，线程池处理完已入队任务，最多再用 5 秒发送剩余响应，然后停止辅助线程、释放连接及 MySQL/Redis。异常 Worker 退出采用整组停止策略，Master 返回 1，不自动重启。后端连接/读写及 Redis 池等待增加 5 秒超时；业务排队耗时不包含在发送阶段的 5 秒内，不承诺整个停机过程固定 5 秒结束。测试步骤见 [SHUTDOWN_VALIDATION.md](SHUTDOWN_VALIDATION.md)。
+3. **实现优雅退出（已通过 Ubuntu 运行验收）**：SIGTERM/SIGQUIT/SIGINT 只设置信号标记，Master 在主循环转发停止信号并回收 Worker；Worker 停止接收，线程池处理完已入队任务，最多再用 5 秒发送剩余响应，然后停止辅助线程、释放连接及 MySQL/Redis。异常 Worker 退出采用整组停止策略，Master 返回 1，不自动重启。线程池排空测试返回 0；停机脚本的 SIGTERM、SIGQUIT、SIGINT 和 Worker SIGKILL 四个场景均通过，进程已回收且端口释放。慢读、ASan/TSan 和性能仍未覆盖。测试步骤及记录见 [SHUTDOWN_VALIDATION.md](SHUTDOWN_VALIDATION.md)。
 4. **收紧认证边界（未开始）**：密码改为带盐哈希，响应不再携带密码；公开部署前补充传输加密、会话身份和管理接口鉴权。
 5. **处理连接并发关闭（代码已修改，运行验收待完成）**：每个 Worker 使用网络状态锁串行化收发、关闭和回收；锁不跨越 MySQL/Redis 调用。业务任务执行期间固定连接对象，关闭后旧响应通过序列号检查丢弃；重复关闭不重复回收，发送使用 `MSG_NOSIGNAL`。此方案优先保证正确性，网络锁对吞吐的影响待压测，尚未经过 TSan 验证。
 
@@ -46,7 +48,7 @@
 
 - 为包头编解码、CRC 和关键配置解析增加少量确定性测试，不为追求数量引入庞大测试框架。
 - 增加 ASan/UBSan 构建；并发路径再使用 TSan 做专项检查。
-- 压测参数改为命令行输入，输出成功率、错误分类、QPS、p50/p95/p99 延迟，并同时记录 CPU、内存、Worker/线程数和 Redis/MySQL 配置。
+- 压测参数已改为命令行输入，支持多客户端进程以及全量/抽样/关闭延迟，固定Ping默认使用预分配 `recv_into` 完整校验快路径和Linux内核收发超时。结果输出成功率、错误分类、QPS和可选的p50/p95/p99，并记录提交、dirty状态、VM CPU/内存和声明的Worker/线程/构建/限流模式。独立采样器同步记录进程树、整机CPU与上下文切换以及日志队列/丢包指标；同机VMware波动仍需用外部发压解决。
 - 同步 README 与实现状态，性能数据没有实测前不使用“海量并发”“工业级”等结论。
 
 ### P2：基于数据优化性能
@@ -54,6 +56,8 @@
 - 评估每个业务包同步执行 Redis `EVAL` 的延迟和吞吐影响，再决定是否采用本地一级计数、`EVALSHA` 或批量上报。
 - 回收队列已在第三项修改中使用迭代器连续删除，但未测量性能收益；定时器删除路径仍有从头遍历，后续根据数据优化，只有测得瓶颈后再增加反向索引等额外结构。
 - 根据压测调整当前 `4 Worker × 120` 业务线程及数据库连接池大小，不把更大的线程数默认视为更高性能。
+
+当前脚本、冒烟记录及正式复测前置条件见 [PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)。
 
 ## 3. 推荐的 Agent 方向
 
@@ -83,7 +87,7 @@ testscript/test_mcp_tools.py  # 离线工具回归
 requirements-mcp.txt          # 固定 MCP SDK 版本
 ```
 
-验证状态（2026-09-13）：4 项 MCP 离线测试与原有 3 项协议回归通过；从仓库外以绝对脚本路径启动后，外部 MCP Client 成功发现三个工具并取得结构化文档检索结果。Ping 的成功、CRC 错误、错误命令、拒绝连接和超时已由临时协议服务器覆盖，但尚未连接真实 C++ 服务。
+验证状态（2026-09-14）：4 项 MCP 与 3 项协议离线测试在 Linux 通过；stdio MCP Client 成功发现三个工具，并完成结构化文档检索、固定日志读取和真实 C++ 服务 Ping。服务停止后 Ping 返回结构化 `connection_failed`，sidecar 正常退出。CRC 错误、错误命令、拒绝连接和超时仍由离线临时协议服务器覆盖。
 
 当前 MCP 不读取任意路径、不执行 Shell，也不修改配置、重启服务或操作数据库。只有当只读流程稳定后，再考虑新增带鉴权的 `_CMD_SERVER_STATS` 和独立诊断 Agent；跨机器 HTTP 还需要认证、TLS 与来源限制。
 

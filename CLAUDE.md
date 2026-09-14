@@ -47,7 +47,7 @@ Master 进程 (`NGX_PROCESS_MASTER`) fork 出 N 个 Worker 进程 (`NGX_PROCESS_
 5. 调用 `g_socket.ngx_epoll_init()` 创建 epoll、连接池并注册监听事件。
 6. 仅事件主线程解除信号屏蔽；后台线程保留屏蔽状态。
 
-**停机流程（代码已修改，Ubuntu 验收待完成）**：信号处理器只记录标记；Master 转发停止信号并回收子进程。Worker 停止接收，排空业务队列，再最多用 5 秒发送剩余响应，随后停止辅助线程并释放连接池。5 秒仅指发送阶段。异常 Worker 退出采用整组停止策略，Master 返回 1，不自动拉起。
+**停机流程（已通过 Ubuntu 联调）**：信号处理器只记录标记；Master 转发停止信号并回收子进程。Worker 停止接收，排空业务队列，再最多用 5 秒发送剩余响应，随后停止辅助线程并释放连接池。5 秒仅指发送阶段。异常 Worker 退出采用整组停止策略，Master 返回 1，不自动拉起。2026-09-14 在 Ubuntu 24.04.5 上通过 SIGTERM/SIGQUIT/SIGINT 和 Worker 异常退出四个场景。
 
 网络状态由每个 Worker 的 `m_ioMutex` 保护；业务查询不持有此锁，`activeJobs` 防止处理中复用连接对象。吞吐影响和竞态验证尚待 VM 实测。
 
@@ -128,6 +128,8 @@ COMM_PKG_HEADER (8 bytes):
 
 > **⚠️ Redis 连接参数硬编码在 `CLogicSocket::InitializeRedis()` 中**：主机 `127.0.0.1:6379`，连接池大小 `10`。`nginx.conf` 的 `[Cache]` 部分 **只控制 TTL**（`UserInfoCacheTtlSec`、`NullUserCacheTtlSec`），不控制 Redis 连接。修改 Redis 地址需要改源码。
 
+Redis L2 限流由 `[NetSecurity]` 的 `RedisRateLimitEnable`、`RedisRateLimitWindowSec` 和 `RedisRateLimitMaxRequests` 控制，默认保持开启、60 秒、20 次。性能基线只能在独立临时配置中关闭，不应修改或提交默认安全配置。
+
 ### 防御机制
 
 - **CRC32 校验**：校验包体数据完整性，不提供身份认证或加密保护
@@ -173,11 +175,11 @@ INI 风格，section 用 `[SectionName]` 标记。`CConfig::Load()` 解析为键
 
 ## 当前优化进度（2026-09-14）
 
-前三项代码已修改：Redis fork 后初始化、协议收发测试、优雅退出与并发关闭。2026-09-07 离线协议回归 3 项通过；Linux 构建和运行验收由用户在 Ubuntu VM 中执行，目前尚未收到结果。认证与可复现压测未开始，不能表述为已解决密码安全或已验证性能。
+前三项已完成 Linux 实机验收：Ubuntu 24.04.5 / G++ 13.3 下 Debug 干净编译、当前16项Python离线回归、线程池排空和四个停机场景通过。真实MySQL/Redis联调已覆盖注册、登录、存在/不存在用户查询及Cache-Aside，且观察到4个Worker分别建立Redis TCP连接。压测端已增加多进程、延迟抽样、预分配Ping完整校验、Linux内核收发超时和整机/子进程采样；单进程约减半已定位为Python用户态超时socket开销，严格单进程恢复到约1.61W。相同4/8核分配下6/8进程长期中位数约5.31W/4.94W。Release与外部压测仍未完成，不能表述为已解决密码安全或已验证服务器性能上限。
 
-2026-09-13 新增 `epoll_mcp/` 本机 stdio sidecar，提供 `epoll_ping_server`、`epoll_search_docs`、`epoll_tail_log` 三个结构化只读工具。4 项 MCP 测试与原有 3 项协议回归在 Windows 通过，外部 MCP Client 已完成工具发现和文档检索调用；尚未连接真实运行中的 C++ 服务验证 Ping。MCP 不进入 epoll 热路径，也不提供任意文件读取、Shell、配置修改、服务启停或数据库写操作。
+2026-09-13 新增 `epoll_mcp/` 本机 stdio sidecar，提供 `epoll_ping_server`、`epoll_search_docs`、`epoll_tail_log` 三个结构化只读工具。2026-09-14 已在 Linux 通过 stdio MCP Client 完成工具发现、文档检索、固定日志读取和真实 C++ 服务 Ping；服务停止后能返回结构化 `connection_failed`。MCP 不进入 epoll 热路径，也不提供任意文件读取、Shell、配置修改、服务启停或数据库写操作。
 
-统一状态见 [优化路线图](docs/OPTIMIZATION_AND_AGENT_ROADMAP.md)，Linux 构建及停机测试命令见 [验收说明](docs/SHUTDOWN_VALIDATION.md)。离线协议回归命令：
+新会话先阅读 [当前状态与下一步](docs/CURRENT_STATUS_AND_NEXT_STEPS.md)。统一状态见 [优化路线图](docs/OPTIMIZATION_AND_AGENT_ROADMAP.md)，Linux 构建及停机测试命令见 [验收说明](docs/SHUTDOWN_VALIDATION.md)。离线协议回归命令：
 
 ```bash
 python3 -m unittest discover -s testscript -p test_protocol.py -v
@@ -187,7 +189,8 @@ python3 -m unittest discover -s testscript -p test_protocol.py -v
 
 ```bash
 # TCP 并发压测（修改脚本中的 SERVER_IP/PORT 后运行）
-python3 testscript/tcp_stress_test.py
+python3 testscript/tcp_stress_test.py --host 127.0.0.1 --port 8080 \
+  --concurrency 20 --requests-per-client 10 --label smoke
 
 # Redis 压测
 python3 testscript/redis_stress_test.py
