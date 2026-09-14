@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-`server/` contains the Linux C++17 service. Its modules separate startup and configuration (`app/`), epoll networking (`net/`), request handlers (`logic/`), process and signal management (`proc/`, `signal/`), shared utilities (`misc/`), and headers (`include/`). `qt-client/` is a separate Qt 6 desktop client with sources under `src/` and shared wire definitions under `shared/`. Database setup lives in `sql/`, standalone integration and load scripts in `testscript/`, and design or learning notes in `docs/`.
+`server/` contains the Linux C++17 service. Its modules separate startup and configuration (`app/`), epoll networking (`net/`), request handlers (`logic/`), process and signal management (`proc/`, `signal/`), shared utilities (`misc/`), and headers (`include/`). `qt-client/` is a separate Qt 6 desktop client with sources under `src/` and shared wire definitions under `shared/`. `epoll_mcp/` is a local Python stdio MCP sidecar that reuses `testscript/protocol.py`. Database setup lives in `sql/`, offline and integration checks in `testscript/`, and design or learning notes in `docs/`.
 
 ## Build, Test, and Development Commands
 
@@ -15,9 +15,12 @@ make -C server clean           # remove generated server objects and binary
 python3 testscript/test_register_login.py
 python3 testscript/test_get_user_info.py
 python3 testscript/tcp_stress_test.py
+python3 -m unittest discover -s testscript -p "test_*.py" -v
+python3 -m pip install -r requirements-mcp.txt
+python3 -m epoll_mcp.server
 ```
 
-The Python scripts expect a reachable server, and database/cache scenarios also require initialized MySQL and Redis. Build the Windows client with `cmake -S qt-client -B qt-client/build -DCMAKE_PREFIX_PATH=<Qt6-path>` followed by `cmake --build qt-client/build --config Release`.
+The integration scripts expect a reachable server, and database/cache scenarios also require initialized MySQL and Redis. The protocol and MCP unit tests are offline. Build the Windows client with `cmake -S qt-client -B qt-client/build -DCMAKE_PREFIX_PATH=<Qt6-path>` followed by `cmake --build qt-client/build --config Release`.
 
 ## Coding Style & Naming Conventions
 
@@ -25,7 +28,7 @@ Match nearby code; no formatter or linter is configured. Use `.cxx` for server i
 
 ## Testing Guidelines
 
-Tests are executable integration scripts rather than a unit-test suite, and no coverage target is defined. Run the focused script for the changed command, then use `tcp_stress_test.py` for networking or concurrency changes. Record service configuration and dependency state when reporting results; do not describe a script as passing if it could not connect.
+Tests combine standard-library `unittest` checks with executable integration scripts; no coverage target is defined. For MCP changes, run `test_mcp_tools.py` and `test_protocol.py`; for changed service commands, run the focused integration script, then use `tcp_stress_test.py` for networking or concurrency changes. Record service configuration and dependency state when reporting results; do not promote offline checks to real-service, MySQL, Redis, Linux, or performance evidence.
 
 ## Commit & Pull Request Guidelines
 
@@ -33,4 +36,4 @@ Recent history uses concise Chinese summaries, with optional prefixes such as `f
 
 ## Security & Configuration
 
-Do not commit real credentials or machine-specific addresses. Treat values in `server/nginx.conf` and `sql/init_users.sql` as local development defaults, and keep generated binaries, logs, and build directories untracked.
+Do not commit real credentials or machine-specific addresses. Treat values in `server/nginx.conf` and `sql/init_users.sql` as local development defaults, and keep generated binaries, logs, and build directories untracked. Keep MCP tools read-only: no arbitrary paths, shell execution, service control, configuration changes, or database/Redis writes without a separately reviewed design.

@@ -38,3 +38,12 @@ LastTest.log
 # 4. 运行日志与编译出来的服务端程序二进制文件
 *.log
 server/nginx
+
+# 5. Python 本地环境与缓存
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 6. Claude 本机权限配置
+.claude/settings.local.json

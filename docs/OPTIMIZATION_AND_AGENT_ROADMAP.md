@@ -1,6 +1,6 @@
 # EpollServer 优化与 Agent 集成路线图
 
-> 更新日期：2026-09-08。本文同时记录代码进度与后续计划；“代码已修改”不等于“运行验收通过”。Agent 部分仍为计划。
+> 更新日期：2026-09-14。本文同时记录代码进度与后续计划；“代码已修改”不等于“运行验收通过”。只读 stdio MCP MVP 已实现，完整 Agent 仍为计划。
 
 ## 1. 当前定位
 
@@ -57,35 +57,35 @@
 
 ## 3. 推荐的 Agent 方向
 
-最适合本项目的第一步不是让 Agent 控制服务器，而是增加一个**只读运维与故障诊断 Agent**。它作为独立 Python 侧车运行，不进入 epoll I/O 热路径。
+最适合本项目的第一步不是让 Agent 控制服务器，而是先提供独立的只读接口。当前已增加 `epoll_mcp/` stdio sidecar，不进入 epoll I/O 热路径；完整运维与故障诊断 Agent 仍是后续计划。
 
 ```text
 用户 / Qt 管理页
         |
         v
-agent_assistant（Python/FastAPI）
-  |- search_epoll_docs：检索 README、docs、配置说明和关键源码证据
-  |- analyze_server_log：解释错误日志并给出排查步骤
-  `- get_server_status：后续通过受限只读接口获取状态
+外部 Agent
+        |
+        v
+epoll_mcp（Python/stdio，已实现）
+  |- epoll_ping_server：验证服务和二进制 Ping 协议
+  |- epoll_search_docs：检索白名单项目文档
+  `- epoll_tail_log：读取固定 error.log 尾部
         |
         v
 EpollServer（C++ 数据面，不调用大模型）
 ```
 
-建议新增位置（均为计划）：
+当前 MCP MVP：
 
 ```text
-agent_assistant/
-  app.py                  # HTTP/CLI 入口
-  agent.py                # 有界决策循环
-  tools/
-    search_epoll_docs.py  # 文档/源码检索
-    analyze_server_log.py # 日志解析
-    epoll_client.py       # 后续访问只读服务命令
-  tests/test_tools.py
+epoll_mcp/server.py           # 三个只读工具与 stdio 入口
+testscript/test_mcp_tools.py  # 离线工具回归
+requirements-mcp.txt          # 固定 MCP SDK 版本
 ```
 
-MVP 只实现 `search_epoll_docs` 与 `analyze_server_log`。只有当只读流程稳定后，再考虑新增本机绑定、带鉴权的 `_CMD_SERVER_STATS`。不建议一开始允许 Agent 修改 `nginx.conf`、重启服务、操作数据库或自动封禁 IP。
+验证状态（2026-09-13）：4 项 MCP 离线测试与原有 3 项协议回归通过；从仓库外以绝对脚本路径启动后，外部 MCP Client 成功发现三个工具并取得结构化文档检索结果。Ping 的成功、CRC 错误、错误命令、拒绝连接和超时已由临时协议服务器覆盖，但尚未连接真实 C++ 服务。
+
+当前 MCP 不读取任意路径、不执行 Shell，也不修改配置、重启服务或操作数据库。只有当只读流程稳定后，再考虑新增带鉴权的 `_CMD_SERVER_STATS` 和独立诊断 Agent；跨机器 HTTP 还需要认证、TLS 与来源限制。
 
 ## 4. 与 KBrag V6 的关联方式
 
@@ -103,13 +103,12 @@ MVP 只实现 `search_epoll_docs` 与 `analyze_server_log`。只有当只读流�
 
 ## 5. 建议实施顺序
 
+只读 stdio MCP MVP 已作为独立支线提前落地。主线后续顺序保持为：
+
 ```text
-Redis fork 修复
-  -> 可信协议测试
-  -> 优雅退出与并发关闭
-  -> 密码存储与响应认证信息
+密码存储与响应认证信息
   -> 可复现压测
-  -> 只读文档/日志 Agent
   -> 受限状态查询工具
+  -> 完整只读诊断 Agent
   -> V6 跨项目演示
 ```

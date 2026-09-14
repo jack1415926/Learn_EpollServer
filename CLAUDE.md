@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-Learn_EpollServer 是一个借鉴 Nginx 架构的 C++17 网络服务器学习框架，基于 Epoll (LT 模式) + 多线程 + Master-Worker 多进程模型。采用自定义"包头+包体"二进制协议，集成 MySQL 连接池和 Redis Cache-Aside 缓存。
+Learn_EpollServer 是一个借鉴 Nginx 架构的 C++17 网络服务器学习框架，基于 Epoll (LT 模式) + 多线程 + Master-Worker 多进程模型。采用自定义"包头+包体"二进制协议，集成 MySQL 连接池和 Redis Cache-Aside 缓存，并提供独立的 Python stdio MCP 只读侧车。
 
 ## 构建与运行
 
@@ -171,9 +171,11 @@ INI 风格，section 用 `[SectionName]` 标记。`CConfig::Load()` 解析为键
 
 `CMemory` 封装了内存池，业务代码中通过 `CMemory::AllocMemory()` 分配、`CMemory::FreeMemory()` 释放，而非直接 new/delete。
 
-## 当前优化进度（2026-09-08）
+## 当前优化进度（2026-09-14）
 
 前三项代码已修改：Redis fork 后初始化、协议收发测试、优雅退出与并发关闭。2026-09-07 离线协议回归 3 项通过；Linux 构建和运行验收由用户在 Ubuntu VM 中执行，目前尚未收到结果。认证与可复现压测未开始，不能表述为已解决密码安全或已验证性能。
+
+2026-09-13 新增 `epoll_mcp/` 本机 stdio sidecar，提供 `epoll_ping_server`、`epoll_search_docs`、`epoll_tail_log` 三个结构化只读工具。4 项 MCP 测试与原有 3 项协议回归在 Windows 通过，外部 MCP Client 已完成工具发现和文档检索调用；尚未连接真实运行中的 C++ 服务验证 Ping。MCP 不进入 epoll 热路径，也不提供任意文件读取、Shell、配置修改、服务启停或数据库写操作。
 
 统一状态见 [优化路线图](docs/OPTIMIZATION_AND_AGENT_ROADMAP.md)，Linux 构建及停机测试命令见 [验收说明](docs/SHUTDOWN_VALIDATION.md)。离线协议回归命令：
 
@@ -196,11 +198,17 @@ python3 testscript/test_register_login.py
 # 按 userId 查询用户信息测试
 python3 testscript/test_get_user_info.py
 
+# MCP 与协议离线回归
+python3 -m unittest discover -s testscript -p "test_*.py" -v
+
+# 本机 stdio MCP（先安装 requirements-mcp.txt）
+python3 -m epoll_mcp.server
+
 # MySQL 初始化（需要先启动 MySQL）
 mysql -u root -p < sql/init_users.sql
 ```
 
-Qt 客户端在 `qt-client/` 目录，使用 CMake 构建。
+Qt 客户端在 `qt-client/` 目录，使用 CMake 构建。MCP 依赖固定在 `requirements-mcp.txt`；从仓库外启动时使用 `epoll_mcp/server.py` 的绝对路径。
 
 ## 编码注意事项
 

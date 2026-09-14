@@ -17,6 +17,7 @@ Learn\_EpollServer 是一个借鉴 Nginx 架构思想实现的 C++ 网络服务�
 * 🛠️ **配套工具**:
   * 🖥️ **Qt 可视化客户端**: qt-client/ 目录下包含基于 Qt 编写的图形化测试客户端。  
   * 🐍 **Python 压测脚本**: testscript/ 目录下包含 TCP 和 Redis 的高并发压力测试脚本。
+  * 🔌 **只读 MCP 接口**: epoll_mcp/ 通过本机 stdio 向 Agent 提供 Ping、文档检索和固定日志读取。
 
 ## **📂 核心目录结构**
 
@@ -32,6 +33,7 @@ Learn\_EpollServer/
 ├── sql/          \# 数据库初始化脚本  
 ├── testscript/   \# 压力测试与功能测试脚本  
 ├── qt-client/    \# Qt 图形化 TCP 测试客户端  
+├── epoll_mcp/    \# 面向本机 Agent 的只读 MCP sidecar
 └── docs/         \# 学习笔记与项目文档
 
 ## **🚀 编译与运行**
@@ -53,6 +55,15 @@ Learn\_EpollServer/
 
    *注：默认可能以守护进程模式运行，可通过修改 server/nginx.conf 配置文件调整行为。*
 
+### MCP sidecar
+
+```bash
+python -m pip install -r requirements-mcp.txt
+python -m epoll_mcp.server
+```
+
+MCP 客户端应以 stdio 方式启动上述模块；从仓库外启动时，可将参数改为 `F:\codex_project\Learn_EpollServer-main\epoll_mcp\server.py` 这样的绝对脚本路径。当前只暴露 `epoll_ping_server`、`epoll_search_docs` 和 `epoll_tail_log` 三个只读工具，不支持远程 HTTP、配置修改、服务启停或数据库操作。
+
 ## **🔮 路线图 (Roadmap)**
 
 本项目正处于持续迭代中，未来的版本演进计划如下：
@@ -61,9 +72,9 @@ Learn\_EpollServer/
 * \[x\] **v0.2**: 引入 **MySQL** 持久化与 Worker 独立连接池。
 * \[x\] **v0.3**: 集成 **Redis Cache-Aside** 与限流实验。
 * \[ \] **v0.4**: 修复资源生命周期和协议测试，补齐优雅退出与可复现压测。
-* \[ \] **v0.5**: 增加只读运维诊断 Agent，并与 KBrag V6 建立工具级演示。
+* \[ \] **v0.5**: 已增加只读 stdio MCP MVP；完整运维诊断 Agent 与 KBrag V6 工具级演示仍待实现。
 
-**当前进度（2026-09-08）**：v0.4 进行中。Redis fork 后初始化、协议测试修复、优雅退出与并发关闭保护已完成代码修改；离线协议回归通过，Linux 编译和运行验收由用户在 Ubuntu VM 中进行，目前尚无验收结果。密码存储与响应信息收紧、可复现压测尚未开始，Agent 仍为计划。
+**当前进度（2026-09-14）**：v0.4 进行中。Redis fork 后初始化、协议测试修复、优雅退出与并发关闭保护已完成代码修改；离线协议回归通过，Linux 编译和运行验收由用户在 Ubuntu VM 中进行，目前尚无验收结果。密码存储与响应信息收紧、可复现压测尚未开始。只读 stdio MCP MVP 已加入项目；4 项 MCP 测试与原有 3 项协议回归通过，外部 MCP Client 已成功发现并调用工具，但尚未连接真实 C++ 服务验证 Ping。完整诊断 Agent 仍为计划。
 
 停机测试步骤见 [Ubuntu 验收说明](docs/SHUTDOWN_VALIDATION.md)。本轮不将代码修改视为生产可用或性能已验证。
 
