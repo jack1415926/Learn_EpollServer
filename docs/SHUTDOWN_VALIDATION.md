@@ -1,6 +1,6 @@
 # 第三项：停机与并发关闭验收
 
-状态复核（2026-09-14）：代码已在 VMware Ubuntu 24.04.5 上完成实机验收。Debug 干净编译、线程池排空、SIGTERM/SIGQUIT/SIGINT 和 Worker 异常退出四个停机场景均通过；真实 MySQL/Redis 业务联调与 stdio MCP Ping 也已完成。慢读、ASan/TSan 和性能测量仍未执行。统一进度见 [优化路线图](OPTIMIZATION_AND_AGENT_ROADMAP.md)。
+状态复核（2026-09-15）：代码已在 VMware Ubuntu 24.04.5 上完成实机验收。Debug 构建、线程池排空、SIGTERM/SIGQUIT/SIGINT 和 Worker 异常退出四个停机场景均通过；真实 MySQL/Redis 业务联调、stdio MCP Ping 和阶段性性能对照也已完成。慢读及 ASan/TSan 仍未执行。当前状态见 [状态摘要](CURRENT_STATUS_AND_NEXT_STEPS.md)。
 
 ## 行为与边界
 
@@ -41,8 +41,9 @@ python3 testscript/test_shutdown.py --binary ./server/nginx
 | Ubuntu / 编译器 / 依赖版本 | Ubuntu 24.04.5 LTS；G++ 13.3；Redis 7.0.15；MySQL 8.0.46 |
 | `make -C server` | Debug 干净编译通过；`ldd` 可解析 Redis++、hiredis、MySQL client |
 | 线程池排空测试 | 10 秒限制内返回 0 |
-| 完整停机脚本及日志目录 | 初次及配置改造后均为 4/4 场景通过；最新日志 `/tmp/epoll-shutdown-zpppc16m` |
+| 完整停机脚本 | 初次及配置改造后均为 4/4 场景通过；临时日志不作为长期证据 |
 | 多 Worker Redis 与注册/查询联调 | 通过；4 个 Worker 均观察到独立 Redis TCP 连接；Cache-Aside 键和值及 TTL 已核对 |
-| 慢读客户端、ASan/TSan、性能测量 | 未运行 |
+| 阶段性性能测量 | 已完成，详见 [性能验证说明](PERFORMANCE_VALIDATION.md) |
+| 慢读客户端、ASan/TSan | 未运行 |
 
 填写时保留命令、退出码、日志路径和错误摘要；不要记录真实凭据。通过协议离线回归不能替代上述验收。

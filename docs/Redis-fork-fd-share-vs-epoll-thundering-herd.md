@@ -34,7 +34,7 @@ setsockopt(isock, SOL_SOCKET, SO_REUSEPORT, &reuseport, sizeof(int));
 
 ---
 
-## 问题二：Redis 连接 fork 后共享（代码已修改，待运行验收）
+## 问题二：Redis 连接 fork 后共享（已修复并完成运行验收）
 
 ### 现象
 
@@ -76,7 +76,7 @@ Redis 协议是请求-响应模型。两个 Worker 几乎同时通过同一个 f
 
 ### 解决方案
 
-2026-09-08 状态复核：Redis 对象已由 fork 后的 `ngx_worker_process_init()` 调用 `InitializeRedis()` 创建，且在启动线程之前完成。连接池创建日志不证明实际连通；多 Worker 联调仍待 Ubuntu VM 验收。
+Redis 对象由 fork 后的 `ngx_worker_process_init()` 调用 `InitializeRedis()` 创建，且在启动线程之前完成。2026-09-14 的真实请求联调中，4 个 Worker 均观察到各自独立的 Redis TCP 连接；这验证了本次运行中的独立建连，但不替代长期稳定性测试。
 
 ```
 ngx_worker_process_init()
@@ -99,6 +99,6 @@ ngx_worker_process_init()
 | **涉及 socket 类型** | 监听 socket (`listen`/`accept`) | 客户端 socket (`connect`) |
 | **`SO_REUSEPORT` 有效** | ✅ 有效，内核分发 | ❌ 无效，不适用于客户端连接 |
 | **修复方式** | `setsockopt(SO_REUSEPORT)` | fork 之后各自重新 `connect` |
-| **本项目状态** | 唤醒行为未验证 | 代码已修改，待 VM 验收 |
+| **本项目状态** | 唤醒行为未验证 | 已完成 4 Worker 独立连接验收 |
 
 当前进度及验收边界见 [优化路线图](OPTIMIZATION_AND_AGENT_ROADMAP.md)。

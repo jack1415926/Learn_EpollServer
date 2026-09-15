@@ -91,9 +91,9 @@ mysql -u epoll_user -pepoll_pass -e "SELECT id,username,created_at FROM epoll_db
 - 穿透保护：值 `NULL_USER`，TTL 默认 60s（`NullUserCacheTtlSec`）
 
 ```bash
-# 先确保 users 表有数据（注册或 INSERT）
-python3 test_register_login.py
-python3 test_get_user_info.py
+# 在仓库根目录执行；先确保 users 表有数据
+python3 testscript/test_register_login.py
+python3 testscript/test_get_user_info.py --exist-id 1 --missing-id 99999
 
 redis-cli GET user:info:1
 redis-cli TTL user:info:99999

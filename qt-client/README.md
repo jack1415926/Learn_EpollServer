@@ -48,7 +48,7 @@ cmake --build build --config Release
 4. 网络任选其一：
    - **NAT + 端口转发**：Windows 连 `127.0.0.1:8080`（需在 VMware 配置端口映射）
    - **桥接**：客户端填 VM 的局域网 IP，如 `192.168.x.x`
-5. 先用 Python 验证：`python tcp_stress_test.py`（在能访问到服务端的环境）
+5. 先在仓库根目录用 Python 验证：`python3 testscript/tcp_stress_test.py --host <VM-IP> --port 8080`
 6. 再打开本客户端 → 连接 → **发送 Ping**，日志应出现 `Ping 成功`
 
 ### 连接报错：`The proxy type is invalid for this operation`

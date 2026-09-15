@@ -1,6 +1,6 @@
 # Redis 旁路缓存——问题分析与面试要点
 
-> 本文档基于 `server/logic/ngx_c_slogic.cxx` 的 `_HandleGetUserInfo` 和 `server/misc/ngx_c_user_cache.cxx` 的 `CUserCacheService` 实现，分析了当前代码存在的问题，并系统性地讲解缓存穿透、击穿、雪崩的概念与解法。
+> 本文是 Cache-Aside 专题分析，未实现的方案仍以“修复方向”标记；当前项目状态以 [CURRENT_STATUS_AND_NEXT_STEPS.md](CURRENT_STATUS_AND_NEXT_STEPS.md) 为准。
 
 ---
 

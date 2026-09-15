@@ -1,6 +1,6 @@
 # EpollServer 优化与 Agent 集成路线图
 
-> 更新日期：2026-09-14。本文同时记录代码进度与后续计划；“代码已修改”不等于“运行验收通过”。只读 stdio MCP MVP 已实现，完整 Agent 仍为计划。
+> 更新日期：2026-09-15。本文保留优化路线与可选后续；当前事实以 [状态摘要](CURRENT_STATUS_AND_NEXT_STEPS.md) 为准，性能数据只维护在 [性能验证说明](PERFORMANCE_VALIDATION.md)。
 
 新会话的工作树状态、实测证据和下一步命令见 [CURRENT_STATUS_AND_NEXT_STEPS.md](CURRENT_STATUS_AND_NEXT_STEPS.md)。
 
@@ -20,9 +20,9 @@
 | 4 | 密码存储与响应认证信息 | 未开始 | 当前仍有明文密码存储和注册响应回传密码，不能视为安全问题已解决 |
 | 5 | 可复现压测，再根据数据优化 | 个人项目范围内完成 | Redis-off/on同口径中位数约5.19W/2.79W，均600万请求全部成功；量化每请求同步Redis Lua吞吐成本约46%，外部发压与Release不在当前范围 |
 
-2026-09-14 已在 VMware Ubuntu 24.04.5 VM（6 vCPU、3.8 GiB、G++ 13.3）完成上述实机验收。修改后的停机回归日志保存在 `/tmp/epoll-shutdown-zpppc16m`；这是本次 VM 的临时证据路径，不保证跨机器长期存在。停机验收详情见 [SHUTDOWN_VALIDATION.md](SHUTDOWN_VALIDATION.md)。
+功能与停机验收最初在 6-vCPU VMware Ubuntu 24.04.5 VM 完成，阶段性性能对照随后在 12 vCPU 下完成。临时日志不作为长期证据，复现步骤见 [SHUTDOWN_VALIDATION.md](SHUTDOWN_VALIDATION.md)。
 
-当前按用户要求先进入可复现压测阶段；认证边界仍是独立的未完成 P0 项，不能因调整执行顺序而降级其优先级。
+可复现压测已在个人项目范围内收尾；认证边界仍是未完成的 P0 项。
 
 ## 2. 优化优先级
 
@@ -38,9 +38,9 @@
    python testscript/test_register_login.py --host 127.0.0.1 --port 8080 --timeout 10
    python testscript/test_get_user_info.py --host 127.0.0.1 --exist-id 1 --missing-id 99999
    ```
-3. **实现优雅退出（已通过 Ubuntu 运行验收）**：SIGTERM/SIGQUIT/SIGINT 只设置信号标记，Master 在主循环转发停止信号并回收 Worker；Worker 停止接收，线程池处理完已入队任务，最多再用 5 秒发送剩余响应，然后停止辅助线程、释放连接及 MySQL/Redis。异常 Worker 退出采用整组停止策略，Master 返回 1，不自动重启。线程池排空测试返回 0；停机脚本的 SIGTERM、SIGQUIT、SIGINT 和 Worker SIGKILL 四个场景均通过，进程已回收且端口释放。慢读、ASan/TSan 和性能仍未覆盖。测试步骤及记录见 [SHUTDOWN_VALIDATION.md](SHUTDOWN_VALIDATION.md)。
+3. **实现优雅退出（已通过 Ubuntu 运行验收）**：SIGTERM/SIGQUIT/SIGINT 只设置信号标记，Master 在主循环转发停止信号并回收 Worker；Worker 停止接收，线程池处理完已入队任务，最多再用 5 秒发送剩余响应，然后停止辅助线程、释放连接及 MySQL/Redis。异常 Worker 退出采用整组停止策略，Master 返回 1，不自动重启。线程池排空测试和 4 个停机场景通过；慢读与 ASan/TSan 仍未覆盖。测试步骤见 [SHUTDOWN_VALIDATION.md](SHUTDOWN_VALIDATION.md)。
 4. **收紧认证边界（未开始）**：密码改为带盐哈希，响应不再携带密码；公开部署前补充传输加密、会话身份和管理接口鉴权。
-5. **处理连接并发关闭（代码已修改，运行验收待完成）**：每个 Worker 使用网络状态锁串行化收发、关闭和回收；锁不跨越 MySQL/Redis 调用。业务任务执行期间固定连接对象，关闭后旧响应通过序列号检查丢弃；重复关闭不重复回收，发送使用 `MSG_NOSIGNAL`。此方案优先保证正确性，网络锁对吞吐的影响待压测，尚未经过 TSan 验证。
+5. **处理连接并发关闭（功能与停机验收通过）**：每个 Worker 使用网络状态锁串行化收发、关闭和回收；锁不跨越 MySQL/Redis 调用。业务任务执行期间固定连接对象，关闭后旧响应通过序列号检查丢弃；重复关闭不重复回收，发送使用 `MSG_NOSIGNAL`。RST/并发停机已覆盖，慢读和 TSan 仍待专项验证。
 
 完成标准：Linux 环境可重复构建；功能脚本能自动判定通过/失败；多 Worker、断连和退出场景留下可复现实验记录。
 
@@ -48,16 +48,16 @@
 
 - 为包头编解码、CRC 和关键配置解析增加少量确定性测试，不为追求数量引入庞大测试框架。
 - 增加 ASan/UBSan 构建；并发路径再使用 TSan 做专项检查。
-- 压测参数已改为命令行输入，支持多客户端进程以及全量/抽样/关闭延迟，固定Ping默认使用预分配 `recv_into` 完整校验快路径和Linux内核收发超时。结果输出成功率、错误分类、QPS和可选的p50/p95/p99，并记录提交、dirty状态、VM CPU/内存和声明的Worker/线程/构建/限流模式。独立采样器同步记录进程树、整机CPU与上下文切换以及日志队列/丢包指标；同机VMware波动仍需用外部发压解决。
+- 压测工具已支持多进程、延迟抽样、严格 Ping 校验、Linux 内核收发超时和同轮资源采样。最终结果存在 VMware 时段波动，当前只作为本地阶段性基准；详见性能文档。
 - 同步 README 与实现状态，性能数据没有实测前不使用“海量并发”“工业级”等结论。
 
 ### P2：基于数据优化性能
 
-- 评估每个业务包同步执行 Redis `EVAL` 的延迟和吞吐影响，再决定是否采用本地一级计数、`EVALSHA` 或批量上报。
+- 已量化每请求同步 Redis `EVAL` 的成本：QPS 中位数约下降 46%。后续只有在继续优化限流时，再评估本地一级计数、`EVALSHA` 或批量上报。
 - 回收队列已在第三项修改中使用迭代器连续删除，但未测量性能收益；定时器删除路径仍有从头遍历，后续根据数据优化，只有测得瓶颈后再增加反向索引等额外结构。
 - 根据压测调整当前 `4 Worker × 120` 业务线程及数据库连接池大小，不把更大的线程数默认视为更高性能。
 
-当前脚本、冒烟记录及正式复测前置条件见 [PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)。
+当前压测工具、最终对照与边界见 [PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)。
 
 ## 3. 推荐的 Agent 方向
 
@@ -93,7 +93,7 @@ requirements-mcp.txt          # 固定 MCP SDK 版本
 
 ## 4. 与 KBrag V6 的关联方式
 
-关联项目：`F:\BaiduNetdiskDownload\V6_submit_code`。
+关联对象是仓库外的 KBrag V6 项目；本文只记录方法级衔接，不依赖机器特定路径。
 
 当前已验证，V6 使用 FastAPI 薄入口、手写有界 ReAct 循环和单一 `search_manual` 工具；技术问题经过产品路由、混合检索、RRF、rerank 后返回 parent section 证据。其 `agent.py`、提示词、图片格式和 `ProductRouter` 与产品手册客服领域紧密耦合，因此不宜直接整体复制到 EpollServer。
 
@@ -111,7 +111,6 @@ requirements-mcp.txt          # 固定 MCP SDK 版本
 
 ```text
 密码存储与响应认证信息
-  -> 可复现压测
   -> 受限状态查询工具
   -> 完整只读诊断 Agent
   -> V6 跨项目演示

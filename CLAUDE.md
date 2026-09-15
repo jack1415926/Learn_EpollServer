@@ -9,14 +9,9 @@ Learn_EpollServer 是一个借鉴 Nginx 架构的 C++17 网络服务器学习框
 ## 构建与运行
 
 ```bash
-# 编译
-cd server && make
-
-# 清理
-cd server && make clean
-
-# 运行（先确保 MySQL 和 Redis 已启动）
-cd server && ./nginx
+make -C server                 # 编译 server/nginx
+make -C server clean           # 清理生成物
+cd server && ./nginx           # 先确保 MySQL、Redis 已启动
 ```
 
 编译依赖：g++ (C++17)、libpthread、libmysqlclient、libredis++、libhiredis。编译输出为 `server/nginx`。
@@ -49,7 +44,7 @@ Master 进程 (`NGX_PROCESS_MASTER`) fork 出 N 个 Worker 进程 (`NGX_PROCESS_
 
 **停机流程（已通过 Ubuntu 联调）**：信号处理器只记录标记；Master 转发停止信号并回收子进程。Worker 停止接收，排空业务队列，再最多用 5 秒发送剩余响应，随后停止辅助线程并释放连接池。5 秒仅指发送阶段。异常 Worker 退出采用整组停止策略，Master 返回 1，不自动拉起。2026-09-14 在 Ubuntu 24.04.5 上通过 SIGTERM/SIGQUIT/SIGINT 和 Worker 异常退出四个场景。
 
-网络状态由每个 Worker 的 `m_ioMutex` 保护；业务查询不持有此锁，`activeJobs` 防止处理中复用连接对象。吞吐影响和竞态验证尚待 VM 实测。
+网络状态由每个 Worker 的 `m_ioMutex` 保护；业务查询不持有此锁，`activeJobs` 防止处理中复用连接对象。功能、停机和阶段性吞吐已完成 VM 验证，慢读及 TSan 专项仍未执行。
 
 ### 网络层 (`server/net/`)
 
@@ -134,8 +129,8 @@ Redis L2 限流由 `[NetSecurity]` 的 `RedisRateLimitEnable`、`RedisRateLimitW
 
 - **CRC32 校验**：校验包体数据完整性，不提供身份认证或加密保护
 - **Flood 攻击检测**：统计单连接收包频率，超阈值踢出
-- **Redis Lua 限流 (L2)**：滑动窗口计数器，同一 IP 60 秒超 20 次请求则加入本地黑名单
-- **本地黑名单 (L1)**：新连接到达时先检查 IP 是否在黑名单
+- **Redis Lua 限流 (L2)**：固定窗口计数器，同一 IP 在配置窗口内超过阈值后加入本地黑名单
+- **本地黑名单 (L1)**：读事件处理器在实际 `recv` 前检查 IP，命中后关闭连接
 - **心跳超时**：`std::multimap<time_t, ...>` 定时器队列，到期不发心跳则踢出
 - **C 字符串防护**：收包后强制 `buf[size-1]='\0'`
 - **防超大包**：包长超过 `_PKG_MAX_LENGTH`(30000) 直接丢弃
@@ -173,9 +168,11 @@ INI 风格，section 用 `[SectionName]` 标记。`CConfig::Load()` 解析为键
 
 `CMemory` 封装了内存池，业务代码中通过 `CMemory::AllocMemory()` 分配、`CMemory::FreeMemory()` 释放，而非直接 new/delete。
 
-## 当前优化进度（2026-09-14）
+## 当前优化进度（2026-09-15）
 
-前三项已完成Linux实机验收：Ubuntu 24.04.5 / G++ 13.3下Debug构建、当前16项Python离线回归、线程池排空和四个停机场景通过。真实MySQL/Redis联调已覆盖注册、登录、存在/不存在用户查询及Cache-Aside，且观察到4个Worker分别建立Redis TCP连接。压测端已增加多进程、延迟抽样、预分配Ping完整校验、Linux内核收发超时和整机/子进程采样；单进程约减半已定位为Python用户态超时socket开销。最终同口径Debug基线在12-vCPU VMware本地环回下，Redis限流关闭/开启三轮中位数约5.19W/2.79W QPS，两组均600万请求全部成功；每请求同步Redis Lua使吞吐约下降46%。Release与外部压测不在当前个人项目验证范围，不能表述为生产吞吐或服务器上限。
+Linux Debug 构建、16 项 Python 离线回归、线程池排空、四个停机场景以及真实 MySQL/Redis 联调均已通过。Redis 在 fork 后初始化，并已观察到 4 个 Worker 的独立连接。压测端已支持多进程、严格协议校验、Linux 内核超时和资源采样；Redis-off/on 最终中位数约 5.19 万/2.79 万 QPS。完整条件只维护在 [性能验证说明](docs/PERFORMANCE_VALIDATION.md)，不要从本文件复制零散历史数字。
+
+密码安全、慢读和 sanitizer 专项仍未完成；项目不能描述为生产可用。
 
 2026-09-13 新增 `epoll_mcp/` 本机 stdio sidecar，提供 `epoll_ping_server`、`epoll_search_docs`、`epoll_tail_log` 三个结构化只读工具。2026-09-14 已在 Linux 通过 stdio MCP Client 完成工具发现、文档检索、固定日志读取和真实 C++ 服务 Ping；服务停止后能返回结构化 `connection_failed`。MCP 不进入 epoll 热路径，也不提供任意文件读取、Shell、配置修改、服务启停或数据库写操作。
 
@@ -188,7 +185,7 @@ python3 -m unittest discover -s testscript -p test_protocol.py -v
 ## 测试工具
 
 ```bash
-# TCP 并发压测（修改脚本中的 SERVER_IP/PORT 后运行）
+# TCP 并发压测冒烟
 python3 testscript/tcp_stress_test.py --host 127.0.0.1 --port 8080 \
   --concurrency 20 --requests-per-client 10 --label smoke
 
