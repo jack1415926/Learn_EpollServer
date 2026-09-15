@@ -175,7 +175,7 @@ INI 风格，section 用 `[SectionName]` 标记。`CConfig::Load()` 解析为键
 
 ## 当前优化进度（2026-09-14）
 
-前三项已完成 Linux 实机验收：Ubuntu 24.04.5 / G++ 13.3 下 Debug 干净编译、当前16项Python离线回归、线程池排空和四个停机场景通过。真实MySQL/Redis联调已覆盖注册、登录、存在/不存在用户查询及Cache-Aside，且观察到4个Worker分别建立Redis TCP连接。压测端已增加多进程、延迟抽样、预分配Ping完整校验、Linux内核收发超时和整机/子进程采样；单进程约减半已定位为Python用户态超时socket开销，严格单进程恢复到约1.61W。相同4/8核分配下6/8进程长期中位数约5.31W/4.94W。Release与外部压测仍未完成，不能表述为已解决密码安全或已验证服务器性能上限。
+前三项已完成Linux实机验收：Ubuntu 24.04.5 / G++ 13.3下Debug构建、当前16项Python离线回归、线程池排空和四个停机场景通过。真实MySQL/Redis联调已覆盖注册、登录、存在/不存在用户查询及Cache-Aside，且观察到4个Worker分别建立Redis TCP连接。压测端已增加多进程、延迟抽样、预分配Ping完整校验、Linux内核收发超时和整机/子进程采样；单进程约减半已定位为Python用户态超时socket开销。提交 `9072832` 的最终干净Debug基线在12-vCPU VMware本地环回、Redis限流关闭条件下三轮中位数约5.19W QPS，600万请求全部成功。Release与外部压测不在当前个人项目验证范围，不能表述为生产吞吐或服务器上限。
 
 2026-09-13 新增 `epoll_mcp/` 本机 stdio sidecar，提供 `epoll_ping_server`、`epoll_search_docs`、`epoll_tail_log` 三个结构化只读工具。2026-09-14 已在 Linux 通过 stdio MCP Client 完成工具发现、文档检索、固定日志读取和真实 C++ 服务 Ping；服务停止后能返回结构化 `connection_failed`。MCP 不进入 epoll 热路径，也不提供任意文件读取、Shell、配置修改、服务启停或数据库写操作。
 
