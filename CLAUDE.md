@@ -170,7 +170,7 @@ INI 风格，section 用 `[SectionName]` 标记。`CConfig::Load()` 解析为键
 
 ## 当前优化进度（2026-09-15）
 
-Linux Debug 构建、16 项 Python 离线回归、线程池排空、四个停机场景以及真实 MySQL/Redis 联调均已通过。Redis 在 fork 后初始化，并已观察到 4 个 Worker 的独立连接。压测端已支持多进程、严格协议校验、Linux 内核超时和资源采样；Redis-off/on 最终中位数约 5.19 万/2.79 万 QPS。完整条件只维护在 [性能验证说明](docs/PERFORMANCE_VALIDATION.md)，不要从本文件复制零散历史数字。
+Linux Debug 构建、16 项 Python 离线回归、线程池排空、四个停机场景以及真实 MySQL/Redis 联调均已通过。Redis 在 fork 后初始化，并已观察到 4 个 Worker 的独立连接。压测端已支持多进程、严格协议校验、Linux 内核超时和资源采样；Redis-off/on 最终中位数约 5.19 万/2.79 万 QPS。完整条件只维护在 [性能验证说明](docs/PERFORMANCE_VALIDATION.md)，排障证据见 [压测问题定位记录](docs/PERFORMANCE_TROUBLESHOOTING.md)。
 
 密码安全、慢读和 sanitizer 专项仍未完成；项目不能描述为生产可用。
 

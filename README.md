@@ -72,7 +72,7 @@ MCP 客户端应以 stdio 方式启动上述模块；从仓库外启动时使用
 * \[x\] **v0.4**: 修复资源生命周期和协议测试，补齐优雅退出与可复现压测。
 * \[ \] **v0.5**: 在只读 stdio MCP MVP 基础上完善诊断 Agent 与跨项目演示。
 
-**当前状态（2026-09-15）**：v0.4 已完成个人项目范围内的 Linux 功能、停机和性能验证。16 项 Python 离线回归与 4 个停机场景通过；最终本地 Debug 基线在 Redis 限流关闭/开启时的三轮 QPS 中位数约为 5.19 万/2.79 万，两组均累计 600 万请求零失败。测试条件与边界见 [性能验证说明](docs/PERFORMANCE_VALIDATION.md)，未完成项见 [当前状态](docs/CURRENT_STATUS_AND_NEXT_STEPS.md)。
+**当前状态（2026-09-15）**：v0.4 已完成个人项目范围内的 Linux 功能、停机和性能验证。16 项 Python 离线回归与 4 个停机场景通过；最终本地 Debug 基线在 Redis 限流关闭/开启时的三轮 QPS 中位数约为 5.19 万/2.79 万，两组均累计 600 万请求零失败。测试条件见 [性能验证说明](docs/PERFORMANCE_VALIDATION.md)，定位与修复过程见 [压测问题记录](docs/PERFORMANCE_TROUBLESHOOTING.md)，未完成项见 [当前状态](docs/CURRENT_STATUS_AND_NEXT_STEPS.md)。
 
 本项目不宣称生产可用或已测得服务器理论上限。停机测试步骤见 [Ubuntu 验收说明](docs/SHUTDOWN_VALIDATION.md)。
 

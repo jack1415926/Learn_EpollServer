@@ -63,6 +63,7 @@ python3 testscript/test_get_user_info.py --host 127.0.0.1 --port 8080 \
 
 - [README](../README.md)：项目介绍与快速启动。
 - [性能验证](PERFORMANCE_VALIDATION.md)：最终条件、结果、解释与简历口径。
+- [压测问题定位](PERFORMANCE_TROUBLESHOOTING.md)：单进程减半、多进程选择和 Redis 成本的证据链。
 - [停机验收](SHUTDOWN_VALIDATION.md)：优雅退出行为和复现命令。
 - [优化路线图](OPTIMIZATION_AND_AGENT_ROADMAP.md)：历史优化项与可选后续方向。
 - [历史代码评审](code-review-2026-07-06.md)：当时版本的问题快照，不作为当前状态来源。
