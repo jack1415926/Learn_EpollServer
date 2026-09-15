@@ -4,30 +4,12 @@
 
 ## 1. 仓库与环境状态
 
-- 当前 HEAD：`dbdf8a6`。
-- 当前工作树包含本轮未提交改动，不能执行会覆盖它们的 pull、reset 或 checkout。
+- 当前性能代码提交：`9072832`；Redis-off文档提交：`10065ed`。
+- 本轮最终文档提交并推送后工作树应为干净状态；新会话仍应先用 `git status --short` 核对，不执行会覆盖未知改动的pull、reset或checkout。
 - 环境：Ubuntu 24.04.5 LTS、G++ 13.3、Python 3.12.3；VM 已从 6 vCPU 调整为 1 插槽 × 12 vCPU，约 3.8 GiB 内存。
 - MySQL 8.0.46 和 Redis 7.0.15 当前均为 active；真实服务使用开发账号和 `epoll_db.users`。
 - nginx 已停止，8080、18080、18081、18082 均无监听；`server/nginx` 是当前 Debug 构建产物并被 Git 忽略。
 - 项目 `.venv` 已创建并安装 `mcp==1.29.0`，目录被 Git 忽略。
-
-当前未提交文件：
-
-```text
-M  CLAUDE.md
-M  README.md
-M  docs/OPTIMIZATION_AND_AGENT_ROADMAP.md
-M  docs/SHUTDOWN_VALIDATION.md
-M  server/include/ngx_c_slogic.h
-M  server/logic/ngx_c_slogic.cxx
-M  server/nginx.conf
-M  testscript/tcp_stress_test.py
-?? docs/PERFORMANCE_VALIDATION.md
-?? testscript/performance_sampler.py
-?? testscript/test_performance_sampler.py
-?? testscript/test_tcp_stress.py
-?? docs/CURRENT_STATUS_AND_NEXT_STEPS.md
-```
 
 ## 2. 已完成的 Linux 实机验收
 
@@ -113,6 +95,8 @@ RedisRateLimitMaxRequests = 20
 /tmp/epoll-8proc-12core/*.json
 /tmp/epoll-final-debug.XbAu3a/{warmup,run1,run2,run3}.json
 /tmp/epoll-final-debug.XbAu3a/run{1,2,3}-resources.json
+/tmp/epoll-final-redis-on.2qxi5Z/{warmup,run1,run2,run3}.json
+/tmp/epoll-final-redis-on.2qxi5Z/run{1,2,3}-resources.json
 ```
 
 结果：
@@ -130,6 +114,7 @@ RedisRateLimitMaxRequests = 20
 | 12核 Debug，6进程内核超时，服务4核/客户端8核 | 每轮200 × 10000 | 6000000/6000000 | 约53059 | 抽样约6.60 ms |
 | 12核 Debug，8进程内核超时，服务4核/客户端8核 | 每轮200 × 10000 | 6000000/6000000 | 约49442 | 抽样约6.75 ms |
 | `9072832`干净提交最终Debug基线，6进程 | 每轮200 × 10000 | 6000000/6000000 | 约51873 | 抽样约6.69 ms |
+| Redis-on高阈值对照，6进程 | 每轮200 × 10000 | 6000000/6000000 | 约27893 | 抽样约10.59 ms |
 
 前两行只是并发 20、总请求 1000 的脚本冒烟。第三行虽然恢复了历史负载规模，但客户端和服务端仍共用 VM，工作树为 dirty，且只完成一轮 Debug；三者都不能直接与历史 1.9W/2.7W 比较或更新为项目性能数据。
 
@@ -146,6 +131,8 @@ RedisRateLimitMaxRequests = 20
 内核超时让严格单进程相对约0.89W提升约81%。6进程最新中位数比早期约5.03W高约5.6%，但两批结果跨VM重启且CPU分配不同，不能据此宣称多进程也由同一修复确定提升5.6%。
 
 2026-09-15在已推送提交 `9072832`、干净工作树上完成最终个人项目Debug基线：三轮QPS为44312、51873、54906，中位数51873；p50/p95/p99中位数3.00/6.69/9.33 ms，600万请求全部成功、失败0、发送丢包0。三轮范围仍约24%，简历必须注明12-vCPU VMware本地环回、Debug和Redis限流关闭，不能表述为生产吞吐或服务器上限。
+
+相同条件下开启Redis Lua限流、临时将阈值提高到1亿后，三轮QPS为23846、27893、34728，中位数27893；p50/p95/p99中位数5.17/10.59/14.02 ms，600万请求全部成功。Redis记录610万次成功 `EVAL`，与预热及正式请求总数一致。相比Redis-off，QPS中位数下降约46.2%，p95上升约58.3%，说明当前每请求同步Redis往返是明确成本。
 
 ## 5. 历史目录核对结论
 
@@ -197,9 +184,9 @@ Debug历史参数、旧版本交叉实验、多进程客户端校准和干净提
 
 不需要为当前个人项目专门构建Release。不要修改并提交默认的 `RedisRateLimitEnable = 1`。
 
-### 第四步：可选Redis对照
+### 第四步：Redis对照已完成
 
-如果以后希望在面试中讨论Redis成本，可只补一组相同负载下的限流关闭/开启对照；这不是当前简历数据的必需项。
+相同负载下的限流关闭/开启对照已经完成，可在面试中说明同步Redis Lua往返的性能成本。
 
 可选对照做两组：
 
